@@ -1,0 +1,3946 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <!--
+    ================================================================
+      我的收藏库 · 改动日志
+      纯前端单文件应用
+      桌面端数据存 JSON 文件（Tauri AppData）
+      浏览器端数据存 IndexedDB（数据库名 myVault，版本 2）
+      对象仓库：items（收藏）/ plans（计划）/ logs（打卡记录）/ settings（设置）
+      警告：不要移动或重命名这个 HTML 文件，否则 IndexedDB 会重新初始化
+    ================================================================
+
+    【v1 · 基础版】
+    - 收藏分类：图片 / 网站 / 动漫 三个内置分类 + 自定义分类
+    - 分类可拖拽排序，支持多级文件夹
+    - 计划模块：打卡型、数值型、周期型
+    - 左侧导航、顶部大日历、待打卡提醒
+    - 默认预置「减肥计划」（数值型）和「喂鱼计划」（周期型）
+    - 支持导入 / 导出 JSON 备份，支持更换背景图
+
+    【v2 · 交互优化】
+    - 顶栏：「＋ 添加」按钮移到搜索框右侧；日期时间固定在右上角
+    - 左侧「我的计划」下每个计划可直接点击进入详情页
+    - 大日历改造：
+      · 每一天可点击，展开当日打卡详情（已打卡的计划+数值+未打卡计划列表）
+      · 格子内显示各计划颜色小圆点（彩色=已打卡，灰色=未打卡）
+      · 图例：有打卡 / 未打卡 / 今天
+    - 日历日期点击逻辑挂在 #content 的 click 事件里（closest('.cal-cell[data-date]')）
+
+    【v3 · 计划增强】
+    - 计划卡片新增「创建日期」显示（副标题形式，格式 MM-DD）
+    - 日历里「计划创建日期之前」的日期不再标红为未打卡
+      · 判定逻辑：plans.some(p => 创建日 <= 该日期)
+    - 周期任务的「每多少天」数字框改为下拉选择器
+      · 预设：每天 / 每2天 / 每3天 / 每5天 / 每周 / 每两周 / 每月 / 每季度 / 每半年
+      · 老数据里不常见的天数会自动追加一个选项并保持选中
+    - 周期任务名右侧显示「上次: MM-DD · 还有 N 天」
+      · 逾期变红、今天到期变黄、未来紫色
+
+    【v4 · Bug 修复】
+    - 修复严重 bug：addDays 函数的参数名 dateStr 遮蔽了同名工具函数 dateStr()
+      · 触发条件：周期任务已打卡（lastCheckinDate 有值）→ renderReminders 调 addDays → 抛 TypeError → 整个 renderPlans 渲染中断
+      · 症状：全部计划页卡死在上次渲染结果、打卡无反应、点击左侧计划无反应
+      · 修复：参数改名 isoStr
+    - 防御性加固：renderContent 里 renderPlans / renderCategoryEntries 加 try/catch
+    - 计划卡片内部操作（打卡/编辑/历史）加 try/catch + toast 错误提示
+
+    【v5 · 图标与计划类型】
+    - ICON_LIB 扩充图标：swim（游泳）、weight（体重管理秤）、fish（喂鱼）、
+      droplet（水滴）、run（跑步）、dumbbell（哑铃）、apple（苹果）、
+      moon（月亮）、sun（太阳）、coffee（咖啡）、pill（药丸）、smile（笑脸）
+    - 新增 ICON_COMMON 常用图标数组（star/heart/flag/calendar/bookmark/
+      weight/swim/fish/dumbbell/droplet 共 10 个）
+    - 图标选择器改为「常用 + 更多」两段式
+      · 默认显示 10 个常用图标
+      · 点「＋ 更多图标」展开全部，再点「− 收起更多」收起
+      · 收藏分类编辑器和计划编辑器两处都生效
+    - 计划类型新增「记录型（record）」
+      · 可正常打卡、取消打卡，打卡后日历仍显示 has-log 和彩色圆点
+      · 但：日历不标红（不参与 missed 判定）
+      · 但：不进入「待打卡提醒」
+      · 但：当日详情里不计入未打卡列表，dd-sum 分母也排除
+
+    【v6 · 桌面端持久化（Tauri 方案 B）】
+    - 背景：打包成 Windows 桌面应用后，PakePlus 每次启动可能给 WebView
+      分配不同的 origin（本地端口随机 / 数据目录变化），IndexedDB 因
+      为绑定 origin 而"看起来"丢了数据。
+    - 方案：优先把全部数据以 JSON 文件写到系统 AppData 目录。
+      · 文件路径：Tauri BaseDirectory.AppData / vault-data.json
+        Windows 实际位置：%APPDATA%\<应用标识符>\vault-data.json
+      · 图片 / 封面（Blob）序列化为 base64 DataURL 后一起存
+    - 加载优先级：磁盘 JSON > IndexedDB > 默认计划
+    - 所有数据变更（打卡 / 取消 / 编辑 / 删除 / 导入 / 背景）自动写盘
+      · 具体做法：loadAll() 末尾自动调用 saveToDisk()
+    - 从磁盘恢复后，会把数据镜像回 IndexedDB，保持两边一致
+    - 环境判断：非 Tauri 环境（直接浏览器打开）自动降级为纯 IndexedDB
+    - 需要的前提条件：
+      · PakePlus 中开启「TauriApi」开关
+      · src-tauri/capabilities/default.json 授予 fs 权限：
+          "fs:allow-app-read",
+          "fs:allow-app-write",
+          "fs:scope-app"
+    - 注意：Blob 会在每次保存时完整序列化，数据量很大时保存耗时会增加
+
+    ================================================================
+    【关键数据结构备忘】
+
+    plan 对象：
+      { id, name, icon, color, kind, unit, entries[], createdAt, updatedAt }
+      kind 取值：'check'（打卡）| 'number'（数值）| 'frequency'（周期）| 'record'（记录）
+
+    entry（计划子项）：
+      { id, name, freqDays?, lastCheckinDate? }
+      · freqDays 仅周期型有值（数字，单位：天）
+      · lastCheckinDate 是 ISO 日期字符串 'YYYY-MM-DD'，由 doCheckIn 自动维护
+
+    log 对象：
+      { id, planId, entryId, date: 'YYYY-MM-DD', value: number }
+
+    【关键函数位置速查】
+      renderCalendar()      — 大日历渲染（含计划色点、未打卡标红）
+      renderDayDetail(ds)   — 某一天的打卡详情
+      renderPlans(c)        — 计划模块总入口
+      planCardHTML(p, ...)  — 单张计划卡片
+      doCheckIn / doUncheck — 打卡 / 取消打卡
+      openPlanEditor(plan)  — 计划编辑器（新建/编辑）
+      openTypeEditor(type)  — 分类编辑器
+      ensureDefaultPlans()  — 首次运行植入默认计划
+      saveToDisk()          — v6 新增：把全部数据写入磁盘 JSON
+      loadFromDisk()        — v6 新增：从磁盘 JSON 恢复全部数据
+      loadAll()             — 已改：末尾自动写盘
+
+    【已知注意事项】
+    - addDays(isoStr, days) 参数名不能叫 dateStr，会遮蔽同名工具函数
+    - 图标选择器的外层容器不能用 <label>，否则里面的 <button> 会被
+      label 隐式关联，点任何地方都会触发 button 点击
+    - IndexedDB 版本号 DB_VER = 2，如需加新对象仓库要升级版本号
+    - v6 持久化依赖 PakePlus 的「TauriApi」开关和 capabilities fs 权限
+    ================================================================
+    -->
+    <title>我的收藏库</title>
+    <style>
+        :root {
+            --bg: #F4F6F9;
+            --panel: #FFFFFF;
+            --card: #FFFFFF;
+            --border: #E5E7EB;
+            --text: #1F2937;
+            --dim: #6B7280;
+            --accent: #4F6BFF;
+            --accent-light: #EEF2FF;
+            --accent-plan: #8B5CF6;
+            --accent-plan-light: #F3EEFF;
+            --danger: #EF4444;
+            --ok: #10B981;
+            --shadow: 0 2px 8px rgba(0,0,0,0.04);
+            --shadow-hover: 0 8px 24px rgba(0,0,0,0.08);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0
+        }
+
+        html, body {
+            height: 100%
+        }
+
+        body {
+            font-family: -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            font-size: 14px;
+            overflow: hidden;
+            -webkit-font-smoothing: antialiased;
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
+        }
+
+        #app {
+            display: flex;
+            height: 100vh
+        }
+
+        #sidebar {
+            width: 248px;
+            flex: none;
+            background: var(--panel);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            padding: 20px 14px 16px;
+            gap: 14px;
+            overflow: hidden;
+            height: 100vh;
+        }
+
+        .brand {
+            font-size: 16px;
+            font-weight: 700;
+            padding: 0 8px;
+            color: var(--text);
+        }
+
+            .brand small {
+                display: block;
+                font-size: 11px;
+                color: var(--dim);
+                font-weight: 400;
+                margin-top: 4px;
+            }
+
+        .nav {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            flex: 1;
+            min-height: 0;
+            overflow: hidden
+        }
+
+        .nav-primary {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding-bottom: 14px;
+            border-bottom: 1px dashed var(--border);
+            margin-bottom: 12px;
+            flex: none;
+        }
+
+        .nav-sec-title {
+            font-size: 10.5px;
+            color: var(--dim);
+            text-transform: uppercase;
+            letter-spacing: 1.4px;
+            padding: 2px 10px 8px;
+            font-weight: 600;
+            flex: none;
+        }
+
+        .nav-secondary {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            flex: 1;
+            overflow-y: auto;
+            padding-right: 2px;
+            min-height: 0
+        }
+
+            .nav-secondary::-webkit-scrollbar {
+                width: 4px
+            }
+
+            .nav-secondary::-webkit-scrollbar-thumb {
+                background: #D1D5DB;
+                border-radius: 2px
+            }
+
+        .nav button {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            padding: 10px 12px;
+            border: 0;
+            background: transparent;
+            color: var(--dim);
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 13.5px;
+            font-family: inherit;
+            text-align: left;
+            transition: background 0.2s, color 0.2s;
+            position: relative;
+            flex-shrink: 0;
+        }
+
+            .nav button:hover {
+                background: #F3F4F6;
+                color: var(--text)
+            }
+
+            .nav button.active {
+                background: var(--accent-light);
+                color: var(--accent);
+                font-weight: 600
+            }
+
+            .nav button svg {
+                width: 18px;
+                height: 18px;
+                stroke: currentColor;
+                fill: none;
+                stroke-width: 2;
+                stroke-linecap: round;
+                stroke-linejoin: round;
+                flex-shrink: 0;
+                pointer-events: none;
+            }
+
+            .nav button .label {
+                pointer-events: none;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis
+            }
+
+            .nav button .count {
+                margin-left: auto;
+                font-size: 11.5px;
+                opacity: 0.7;
+                pointer-events: none;
+                min-width: 16px;
+                text-align: right
+            }
+
+        .nav-primary button[data-view="all"] svg {
+            stroke: #4F6BFF
+        }
+
+        .nav-primary button[data-view="all"].active {
+            background: #EEF2FF;
+            color: #4F6BFF
+        }
+
+        .nav-primary button[data-view="plan"] svg {
+            stroke: #8B5CF6
+        }
+
+        .nav-primary button[data-view="plan"].active {
+            background: #F3EEFF;
+            color: #8B5CF6
+        }
+
+        .nav button.dragging {
+            opacity: 0.3
+        }
+
+        .nav button.drop-before {
+            box-shadow: inset 0 3px 0 -1px var(--accent)
+        }
+
+        .nav button.drop-after {
+            box-shadow: inset 0 -3px 0 -1px var(--accent)
+        }
+
+        .side-foot {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            flex: none;
+            margin-top: auto
+        }
+
+            .side-foot button {
+                padding: 10px 14px;
+                border-radius: 10px;
+                border: 1px solid var(--border);
+                background: #fff;
+                color: var(--dim);
+                cursor: pointer;
+                font-size: 13px;
+                font-family: inherit;
+                transition: all 0.2s;
+                display: flex;
+                align-items: center;
+                justify-content: flex-start;
+                gap: 10px;
+            }
+
+                .side-foot button:hover {
+                    background: #F9FAFB;
+                    color: var(--text);
+                    border-color: #D1D5DB
+                }
+
+        .tip {
+            font-size: 11px;
+            color: #9CA3AF;
+            line-height: 1.6;
+            padding: 0 4px;
+            flex: none
+        }
+
+        #main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            background: transparent
+        }
+
+        .topbar {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            padding: 16px 24px 14px;
+            border-bottom: 1px solid var(--border);
+            flex: none;
+            background: var(--panel);
+        }
+
+        #search {
+            flex: 1;
+            max-width: 480px;
+            padding: 10px 16px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: #F9FAFB;
+            color: var(--text);
+            font-size: 14px;
+            font-family: inherit;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+            #search:focus {
+                border-color: var(--accent);
+                background: #fff;
+                box-shadow: 0 0 0 3px rgba(79,107,255,0.1)
+            }
+
+        #datetime {
+            margin-left: auto;
+            font-size: 13px;
+            color: var(--dim);
+            font-weight: 500;
+            white-space: nowrap;
+            background: #F9FAFB;
+            padding: 8px 14px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border-radius: 12px;
+            border: 0;
+            background: var(--accent);
+            color: #fff;
+            cursor: pointer;
+            font-size: 14px;
+            font-family: inherit;
+            font-weight: 500;
+            white-space: nowrap;
+            transition: all 0.2s;
+        }
+
+            .btn:hover {
+                background: #3B5BDB;
+                transform: translateY(-1px);
+                box-shadow: 0 4px 12px rgba(79,107,255,0.3)
+            }
+
+            .btn.ghost {
+                background: #F3F4F6;
+                color: var(--dim);
+                border: 1px solid transparent
+            }
+
+                .btn.ghost:hover {
+                    background: #E5E7EB;
+                    color: var(--text);
+                    transform: translateY(-1px);
+                    box-shadow: var(--shadow)
+                }
+
+            .btn.danger {
+                background: transparent;
+                color: var(--danger);
+                border: 1px solid #FEE2E2
+            }
+
+                .btn.danger:hover {
+                    background: #FEF2F2;
+                    color: #DC2626
+                }
+
+        #toolbar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 24px;
+            border-bottom: 1px solid var(--border);
+            flex: none;
+            background: var(--panel);
+            min-height: 48px;
+        }
+
+        #breadcrumb {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+            font-size: 13.5px;
+            color: var(--dim);
+        }
+
+            #breadcrumb .crumb {
+                cursor: pointer;
+                padding: 3px 8px;
+                border-radius: 6px;
+                transition: all 0.15s;
+            }
+
+                #breadcrumb .crumb:hover {
+                    background: #F3F4F6;
+                    color: var(--text)
+                }
+
+                #breadcrumb .crumb.current {
+                    color: var(--text);
+                    font-weight: 600;
+                    cursor: default;
+                }
+
+                    #breadcrumb .crumb.current:hover {
+                        background: transparent
+                    }
+
+            #breadcrumb .sep {
+                color: #D1D5DB;
+                user-select: none
+            }
+
+            #breadcrumb .crumb-icon {
+                width: 16px;
+                height: 16px;
+                display: inline-flex;
+                vertical-align: -3px;
+                margin-right: 4px;
+            }
+
+                #breadcrumb .crumb-icon svg {
+                    width: 16px;
+                    height: 16px;
+                    stroke: currentColor;
+                    fill: none;
+                    stroke-width: 2;
+                    stroke-linecap: round;
+                    stroke-linejoin: round;
+                }
+
+        #btnNewFolder {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 7px 14px;
+            font-size: 13px;
+            border-radius: 9px;
+            border: 1px solid var(--border);
+            background: #fff;
+            color: var(--dim);
+            cursor: pointer;
+            font-family: inherit;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+            #btnNewFolder:hover {
+                background: #F9FAFB;
+                color: var(--text);
+                border-color: #D1D5DB
+            }
+
+            #btnNewFolder svg {
+                width: 15px;
+                height: 15px;
+                stroke: currentColor;
+                fill: none;
+                stroke-width: 2;
+                stroke-linecap: round;
+                stroke-linejoin: round;
+            }
+
+        #content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px
+        }
+
+            #content::-webkit-scrollbar {
+                width: 8px
+            }
+
+            #content::-webkit-scrollbar-thumb {
+                background: #D1D5DB;
+                border-radius: 4px
+            }
+
+        /* ===== 全部收藏：大类别入口 ===== */
+        .cat-list {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 12px;
+            max-width: 100%;
+        }
+
+        .cat-entry {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 14px 18px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: var(--shadow);
+            animation: cardIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+
+            .cat-entry:hover {
+                border-color: #D1D5DB;
+                transform: translateY(-1px);
+                box-shadow: var(--shadow-hover);
+            }
+
+            .cat-entry .cat-icon-box {
+                width: 46px;
+                height: 46px;
+                border-radius: 12px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                flex: none;
+                transition: transform 0.2s;
+            }
+
+            .cat-entry:hover .cat-icon-box {
+                transform: scale(1.06);
+            }
+
+            .cat-entry .cat-icon-box svg {
+                width: 24px;
+                height: 24px;
+                stroke: currentColor;
+                fill: none;
+                stroke-width: 2;
+                stroke-linecap: round;
+                stroke-linejoin: round;
+            }
+
+            .cat-entry .cat-info {
+                flex: 1;
+                min-width: 0;
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+            }
+
+            .cat-entry .cat-name {
+                font-size: 15px;
+                font-weight: 600;
+                color: var(--text);
+                line-height: 1.3;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .cat-entry .cat-sub {
+                font-size: 12px;
+                color: #9CA3AF;
+            }
+
+            .cat-entry .cat-arrow {
+                flex: none;
+                color: #D1D5DB;
+                display: flex;
+                align-items: center;
+                transition: color 0.2s, transform 0.2s;
+            }
+
+            .cat-entry:hover .cat-arrow {
+                color: var(--accent);
+                transform: translateX(2px);
+            }
+
+            .cat-entry .cat-arrow svg {
+                width: 18px;
+                height: 18px;
+                stroke: currentColor;
+                fill: none;
+                stroke-width: 2;
+                stroke-linecap: round;
+                stroke-linejoin: round;
+            }
+
+        /* ===== 分类内：小正方形卡片 ===== */
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill,minmax(180px,1fr));
+            gap: 16px
+        }
+
+        /* 文件夹长条 */
+        .folder-block {
+            grid-column: 1 / -1;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            animation: cardIn 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+
+        .card.folder {
+            display: flex;
+            flex-direction: row;
+            flex-wrap: nowrap;
+            align-items: center;
+            justify-content: flex-start;
+            gap: 12px;
+            width: 100%;
+            padding: 10px 14px;
+            border-radius: 12px;
+            min-height: 0;
+            overflow: hidden;
+            background: var(--card);
+            border: 1px solid var(--border);
+            cursor: pointer;
+            box-shadow: var(--shadow);
+            transition: all 0.2s;
+        }
+
+            .card.folder:hover {
+                border-color: #D1D5DB;
+                transform: translateY(-1px);
+                box-shadow: var(--shadow-hover);
+            }
+
+            .card.folder .folder-icon-box {
+                width: 40px;
+                height: 40px;
+                flex: 0 0 40px;
+                border-radius: 10px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: transform 0.2s;
+            }
+
+            .card.folder:hover .folder-icon-box {
+                transform: scale(1.05);
+            }
+
+            .card.folder .folder-icon-box svg {
+                width: 22px;
+                height: 22px;
+                stroke: currentColor;
+                fill: none;
+                stroke-width: 2;
+                stroke-linecap: round;
+                stroke-linejoin: round;
+            }
+
+            .card.folder .folder-info {
+                flex: 1 1 auto;
+                min-width: 0;
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+            }
+
+            .card.folder .folder-title {
+                font-size: 14.5px;
+                font-weight: 600;
+                color: var(--text);
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                line-height: 1.3;
+            }
+
+            .card.folder .folder-sub {
+                font-size: 12px;
+                color: #9CA3AF;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .card.folder .folder-arrow {
+                flex: 0 0 auto;
+                color: #D1D5DB;
+                display: flex;
+                align-items: center;
+                transition: color 0.2s, transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+            }
+
+                .card.folder .folder-arrow svg {
+                    width: 18px;
+                    height: 18px;
+                    stroke: currentColor;
+                    fill: none;
+                    stroke-width: 2;
+                    stroke-linecap: round;
+                    stroke-linejoin: round;
+                }
+
+            .card.folder:hover .folder-arrow {
+                color: var(--accent);
+            }
+
+            .card.folder .folder-edit-btn {
+                flex: 0 0 auto;
+                width: 30px;
+                height: 30px;
+                border-radius: 8px;
+                border: 0;
+                background: transparent;
+                color: var(--dim);
+                cursor: pointer;
+                font-size: 14px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: all 0.2s;
+                opacity: 0;
+            }
+
+            .card.folder:hover .folder-edit-btn {
+                opacity: 1;
+            }
+
+            .card.folder .folder-edit-btn:hover {
+                background: #F3F4F6;
+                color: var(--accent);
+            }
+
+            /* 进入按钮 */
+            .card.folder .folder-enter-btn {
+                flex: 0 0 auto;
+                width: 32px;
+                height: 32px;
+                border-radius: 8px;
+                border: 0;
+                background: transparent;
+                color: var(--dim);
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: all 0.2s;
+                margin-right: 2px;
+            }
+
+                .card.folder .folder-enter-btn:hover {
+                    background: var(--accent-light);
+                    color: var(--accent);
+                }
+
+                .card.folder .folder-enter-btn svg {
+                    width: 16px;
+                    height: 16px;
+                    stroke: currentColor;
+                    fill: none;
+                    stroke-width: 2;
+                    stroke-linecap: round;
+                    stroke-linejoin: round;
+                }
+
+        .folder-expand {
+            padding: 4px;
+            animation: expandIn 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        @keyframes expandIn {
+            from {
+                opacity: 0;
+                transform: translateY(-8px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* ===== 小正方形卡片 ===== */
+        .mini-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+            gap: 10px;
+        }
+
+        .mini-empty {
+            padding: 22px;
+            text-align: center;
+            color: #9CA3AF;
+            font-size: 13px;
+            background: rgba(249, 250, 251, 0.7);
+            border-radius: 10px;
+            border: 1px dashed var(--border);
+        }
+
+        .mini-card {
+            aspect-ratio: 1 / 1;
+            border-radius: 10px;
+            overflow: hidden;
+            position: relative;
+            cursor: pointer;
+            background: #F9FAFB;
+            border: 1px solid var(--border);
+            transition: all 0.2s;
+            animation: cardIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+            box-shadow: var(--shadow);
+        }
+
+            .mini-card:hover {
+                border-color: #D1D5DB;
+                transform: translateY(-2px);
+                box-shadow: var(--shadow-hover);
+            }
+
+            .mini-card img {
+                width: 100%;
+                height: 100%;
+                object-fit: cover;
+                display: block;
+            }
+
+            .mini-card .mini-ph {
+                width: 100%;
+                height: 100%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 28px;
+                font-weight: 700;
+                color: #D1D5DB;
+            }
+
+            .mini-card .mini-ph-icon {
+                width: 100%;
+                height: 100%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+                .mini-card .mini-ph-icon svg {
+                    width: 32px;
+                    height: 32px;
+                    stroke: currentColor;
+                    fill: none;
+                    stroke-width: 1.5;
+                }
+
+            .mini-card .mini-title {
+                position: absolute;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                padding: 16px 6px 5px;
+                background: linear-gradient(transparent, rgba(0,0,0,0.78));
+                color: #fff;
+                font-size: 11px;
+                line-height: 1.3;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .mini-card .editbtn {
+                position: absolute;
+                top: 5px;
+                right: 5px;
+                width: 20px;
+                height: 20px;
+                border-radius: 6px;
+                border: 0;
+                background: rgba(255,255,255,0.9);
+                color: var(--dim);
+                cursor: pointer;
+                font-size: 11px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                opacity: 0;
+                transition: all 0.2s;
+                z-index: 2;
+            }
+
+            .mini-card:hover .editbtn {
+                opacity: 1;
+            }
+
+            .mini-card .editbtn:hover {
+                background: var(--accent);
+                color: #fff;
+            }
+
+            .mini-card.mini-folder {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+                padding: 8px;
+                background: linear-gradient(135deg, #F5F7FF 0%, #EEF2FF 100%);
+            }
+
+                .mini-card.mini-folder .mini-folder-icon {
+                    width: 36px;
+                    height: 36px;
+                    border-radius: 9px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    flex: none;
+                }
+
+                    .mini-card.mini-folder .mini-folder-icon svg {
+                        width: 20px;
+                        height: 20px;
+                        stroke: currentColor;
+                        fill: none;
+                        stroke-width: 2;
+                        stroke-linecap: round;
+                        stroke-linejoin: round;
+                    }
+
+                .mini-card.mini-folder .mini-title {
+                    position: static;
+                    background: none;
+                    color: var(--text);
+                    padding: 0;
+                    font-size: 11.5px;
+                    font-weight: 600;
+                    text-align: center;
+                    max-width: 100%;
+                    text-shadow: none;
+                }
+
+        .empty {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 60%;
+            gap: 14px;
+            color: var(--dim)
+        }
+
+            .empty .big {
+                font-size: 48px;
+                opacity: 0.2
+            }
+
+        /* ===== 计划 ===== */
+        .plan-layout {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        .calendar-box {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 18px;
+            box-shadow: var(--shadow);
+        }
+
+        .cal-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+
+        .cal-title {
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .cal-nav {
+            display: flex;
+            gap: 6px;
+        }
+
+            .cal-nav button {
+                width: 28px;
+                height: 28px;
+                border-radius: 7px;
+                border: 1px solid var(--border);
+                background: #fff;
+                color: var(--dim);
+                cursor: pointer;
+                font-size: 13px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: all 0.2s;
+            }
+
+                .cal-nav button:hover {
+                    background: #F3F4F6;
+                    color: var(--text);
+                }
+
+        .cal-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 4px;
+            text-align: center;
+        }
+
+            .cal-grid .cal-w {
+                font-size: 11px;
+                color: #9CA3AF;
+                padding: 4px 0;
+                font-weight: 600;
+            }
+
+        .cal-cell {
+            aspect-ratio: 1;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            color: var(--text);
+            position: relative;
+            background: #F9FAFB;
+            border: 1px solid transparent;
+        }
+
+            .cal-cell.empty {
+                background: transparent;
+                border: 0;
+            }
+
+            .cal-cell.today {
+                border-color: var(--accent);
+                background: var(--accent-light);
+                font-weight: 700;
+            }
+
+            .cal-cell.has-log {
+                background: #ECFDF5;
+            }
+
+            .cal-cell.missed {
+                background: #FEF2F2;
+                color: #991B1B;
+            }
+
+            .cal-cell .dot {
+                width: 5px;
+                height: 5px;
+                border-radius: 50%;
+                background: var(--ok);
+                margin-top: 2px;
+                position: absolute;
+                bottom: 4px;
+            }
+
+            .cal-cell.missed .dot {
+                background: var(--danger);
+            }
+
+        .reminder-box {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 16px 18px;
+            box-shadow: var(--shadow);
+        }
+
+        .reminder-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text);
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .reminder-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .reminder-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: #FEF2F2;
+            border: 1px solid #FEE2E2;
+            font-size: 13px;
+        }
+
+            .reminder-item .r-icon {
+                color: var(--danger);
+                display: flex;
+                flex: none;
+            }
+
+            .reminder-item .r-text {
+                flex: 1;
+                color: #991B1B;
+            }
+
+            .reminder-item .r-action {
+                border: 0;
+                background: transparent;
+                color: var(--accent);
+                cursor: pointer;
+                font-size: 12.5px;
+                font-weight: 600;
+                font-family: inherit;
+                padding: 4px 8px;
+                border-radius: 6px;
+            }
+
+                .reminder-item .r-action:hover {
+                    background: rgba(79,107,255,0.1);
+                }
+
+        .plan-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: var(--shadow);
+            transition: box-shadow 0.2s, border-color 0.2s;
+            animation: cardIn 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+
+            .plan-card:hover {
+                border-color: #D1D5DB;
+                box-shadow: var(--shadow-hover);
+            }
+
+        .plan-head {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 16px 16px 12px;
+        }
+
+        .plan-icon {
+            width: 42px;
+            height: 42px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex: none;
+        }
+
+            .plan-icon svg {
+                width: 22px;
+                height: 22px;
+                stroke: currentColor;
+                fill: none;
+                stroke-width: 2;
+                stroke-linecap: round;
+                stroke-linejoin: round;
+            }
+
+        .plan-titles {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .plan-name {
+            font-size: 15.5px;
+            font-weight: 700;
+            color: var(--text);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .plan-sub {
+            font-size: 12px;
+            color: #9CA3AF;
+            margin-top: 2px;
+        }
+
+        .plan-edit {
+            flex: none;
+            width: 30px;
+            height: 30px;
+            border-radius: 8px;
+            border: 0;
+            background: transparent;
+            color: var(--dim);
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+
+            .plan-edit:hover {
+                background: #F3F4F6;
+                color: var(--accent);
+            }
+
+        .plan-entries {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            padding: 0 10px 6px;
+        }
+
+        .entry-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 7px 8px;
+            border-radius: 10px;
+            transition: background 0.15s;
+        }
+
+            .entry-row:hover {
+                background: rgba(0,0,0,0.025);
+            }
+
+        .entry-name {
+            flex: 1;
+            min-width: 0;
+            font-size: 13.5px;
+            color: var(--text);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            cursor: pointer;
+        }
+
+            .entry-name:hover {
+                color: var(--accent);
+            }
+
+        .entry-value {
+            flex: none;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text);
+            padding: 6px 10px;
+            background: #F3F4F6;
+            border-radius: 8px;
+            white-space: nowrap;
+        }
+
+        .entry-val {
+            flex: none;
+            width: 76px;
+            padding: 6px 8px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: #F9FAFB;
+            color: var(--text);
+            font-size: 13px;
+            font-family: inherit;
+            outline: none;
+            text-align: center;
+            transition: all 0.2s;
+        }
+
+            .entry-val::-webkit-outer-spin-button,
+            .entry-val::-webkit-inner-spin-button {
+                -webkit-appearance: none;
+                margin: 0;
+            }
+
+            .entry-val:focus {
+                border-color: var(--accent);
+                background: #fff;
+                box-shadow: 0 0 0 3px rgba(79,107,255,0.1);
+            }
+
+        .entry-check {
+            flex: none;
+            min-width: 66px;
+            padding: 6px 12px;
+            border-radius: 9px;
+            border: 0;
+            background: var(--accent);
+            color: #fff;
+            font-size: 12.5px;
+            font-family: inherit;
+            font-weight: 500;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.18s;
+        }
+
+            .entry-check:hover {
+                background: #3B5BDB;
+            }
+
+            .entry-check.done {
+                background: #D1FAE5;
+                color: #059669;
+            }
+
+                .entry-check.done:hover {
+                    background: #A7F3D0;
+                }
+
+        .entry-cancel {
+            flex: none;
+            width: 26px;
+            height: 26px;
+            border-radius: 7px;
+            border: 0;
+            background: transparent;
+            color: #D1D5DB;
+            font-size: 13px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.18s;
+        }
+
+            .entry-cancel:hover:not(:disabled) {
+                background: #FEF2F2;
+                color: var(--danger);
+            }
+
+            .entry-cancel:disabled {
+                opacity: 0.3;
+                cursor: default;
+            }
+
+        .plan-strip {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            padding: 8px 16px 14px;
+        }
+
+            .plan-strip i {
+                flex: 1;
+                height: 6px;
+                border-radius: 3px;
+                background: #F3F4F6;
+            }
+
+                .plan-strip i.on {
+                    background: var(--plan-color, var(--ok));
+                }
+
+        .plan-meta {
+            padding: 0 16px 12px;
+            font-size: 12px;
+            color: var(--dim);
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+            .plan-meta span {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            }
+
+        .bar {
+            height: 8px;
+            background: #F3F4F6;
+            border-radius: 4px;
+            overflow: hidden
+        }
+
+            .bar i {
+                display: block;
+                height: 100%;
+                background: linear-gradient(90deg,var(--accent-plan),#B197FC);
+                border-radius: 4px;
+                transition: width 0.4s ease
+            }
+
+        /* ===== 弹窗 ===== */
+        #modalRoot {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 100
+        }
+
+        .modal-mask {
+            position: absolute;
+            inset: 0;
+            background: rgba(0,0,0,0.4);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        .modal {
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            width: 100%;
+            max-width: 480px;
+            max-height: 88vh;
+            overflow-y: auto;
+            padding: 28px 28px 24px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+            animation: pop 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+            .modal.wide {
+                max-width: 680px
+            }
+
+        @keyframes pop {
+            from {
+                transform: scale(0.96);
+                opacity: 0
+            }
+
+            to {
+                transform: scale(1);
+                opacity: 1
+            }
+        }
+
+        .modal h3 {
+            font-size: 18px;
+            margin-bottom: 20px;
+            font-weight: 700;
+            color: var(--text)
+        }
+
+        .modal label {
+            display: block;
+            font-size: 13px;
+            color: var(--dim);
+            margin-bottom: 14px;
+            font-weight: 500
+        }
+
+        .modal input[type=text], .modal input[type=number], .modal input[type=date], .modal input[type=url], .modal textarea, .modal select {
+            display: block;
+            width: 100%;
+            margin-top: 6px;
+            padding: 10px 14px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: #F9FAFB;
+            color: var(--text);
+            font-size: 14px;
+            font-family: inherit;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+            .modal input:focus, .modal textarea:focus, .modal select:focus {
+                border-color: var(--accent);
+                background: #fff;
+                box-shadow: 0 0 0 3px rgba(79,107,255,0.1)
+            }
+
+        .modal textarea {
+            resize: vertical;
+            min-height: 72px;
+            line-height: 1.6
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 24px;
+            align-items: center
+        }
+
+            .modal-actions .sp {
+                flex: 1
+            }
+
+        .row {
+            display: flex;
+            gap: 14px
+        }
+
+            .row label {
+                flex: 1
+            }
+
+        .icon-picker {
+            display: grid;
+            grid-template-columns: repeat(6,1fr);
+            gap: 8px;
+            margin-top: 8px
+        }
+
+        .icon-opt {
+            aspect-ratio: 1;
+            border-radius: 10px;
+            border: 1.5px solid var(--border);
+            background: #F9FAFB;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+            .icon-opt:hover {
+                background: #EEF2FF;
+                border-color: #C7D0FF
+            }
+
+            .icon-opt svg {
+                width: 22px;
+                height: 22px;
+                stroke: #6B7280;
+                fill: none;
+                stroke-width: 2;
+                stroke-linecap: round;
+                stroke-linejoin: round;
+                transition: stroke 0.15s
+            }
+
+            .icon-opt.selected {
+                border-color: var(--accent);
+                background: var(--accent-light);
+                box-shadow: 0 0 0 3px rgba(79,107,255,0.1)
+            }
+
+                .icon-opt.selected svg {
+                    stroke: var(--accent)
+                }
+
+        .color-picker {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 8px
+        }
+
+        .color-opt {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            cursor: pointer;
+            transition: all 0.15s;
+            border: 2px solid transparent;
+            position: relative;
+        }
+
+            .color-opt:hover {
+                transform: scale(1.1)
+            }
+
+            .color-opt.selected {
+                border-color: #fff;
+                box-shadow: 0 0 0 2px var(--text), 0 0 0 4px #fff
+            }
+
+        #lightbox {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 200;
+            background: rgba(255,255,255,0.95);
+            align-items: center;
+            justify-content: center;
+            cursor: zoom-out;
+            padding: 40px;
+            backdrop-filter: blur(8px);
+            animation: fadeIn 0.2s ease;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0
+            }
+
+            to {
+                opacity: 1
+            }
+        }
+
+        #lightbox img {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            border-radius: 12px;
+            box-shadow: 0 20px 80px rgba(0,0,0,0.2);
+            animation: zoomIn 0.25s cubic-bezier(0.16, 1, 0.3, 1)
+        }
+
+        @keyframes zoomIn {
+            from {
+                transform: scale(0.94);
+                opacity: 0
+            }
+
+            to {
+                transform: scale(1);
+                opacity: 1
+            }
+        }
+
+        #toast {
+            position: fixed;
+            bottom: 32px;
+            left: 50%;
+            transform: translateX(-50%) translateY(20px);
+            background: #1F2937;
+            border: 1px solid #374151;
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 12px;
+            font-size: 14px;
+            opacity: 0;
+            pointer-events: none;
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            z-index: 300;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        }
+
+            #toast.show {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0)
+            }
+
+            #toast.err {
+                border-color: #EF4444;
+                color: #FCA5A5
+            }
+
+        #progress {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 400;
+            background: rgba(255,255,255,0.8);
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            gap: 16px;
+            backdrop-filter: blur(4px);
+        }
+
+            #progress .pbox {
+                background: #fff;
+                border: 1px solid var(--border);
+                border-radius: 16px;
+                padding: 28px 36px;
+                text-align: center;
+                box-shadow: var(--shadow-hover)
+            }
+
+                #progress .pbox .t {
+                    font-size: 15px;
+                    margin-bottom: 14px;
+                    font-weight: 500;
+                    color: var(--text)
+                }
+
+            #progress .bar {
+                width: 240px
+            }
+
+        @keyframes contentSwitch {
+            0% {
+                opacity: 0;
+                transform: translateY(14px);
+            }
+
+            100% {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes cardIn {
+            0% {
+                opacity: 0;
+                transform: translateY(16px) scale(0.98);
+            }
+
+            100% {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+
+        #content.animating {
+            animation: contentSwitch 0.42s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .card, .plan-card {
+            animation: cardIn 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+
+        body.has-bg {
+            background-color: #F4F6F9;
+        }
+
+            body.has-bg #sidebar, body.has-bg .topbar, body.has-bg #toolbar,
+            body.has-bg .card, body.has-bg .plan-card, body.has-bg .modal, body.has-bg #progress .pbox,
+            body.has-bg .cat-entry, body.has-bg .calendar-box, body.has-bg .reminder-box {
+                background: rgba(255, 255, 255, 0.82);
+                backdrop-filter: blur(16px);
+                -webkit-backdrop-filter: blur(16px);
+                border-color: rgba(255, 255, 255, 0.5);
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+            }
+
+                body.has-bg .card:hover, body.has-bg .plan-card:hover, body.has-bg .cat-entry:hover {
+                    background: rgba(255, 255, 255, 0.95);
+                    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.1);
+                }
+
+            body.has-bg #search {
+                background: rgba(255, 255, 255, 0.6);
+            }
+
+                body.has-bg #search:focus {
+                    background: #fff;
+                }
+
+            body.has-bg .btn.ghost {
+                background: rgba(255, 255, 255, 0.5);
+            }
+
+                body.has-bg .btn.ghost:hover {
+                    background: rgba(255, 255, 255, 0.9);
+                }
+
+            body.has-bg .nav button:hover {
+                background: rgba(0,0,0,0.04);
+            }
+
+            body.has-bg #btnNewFolder {
+                background: rgba(255, 255, 255, 0.6);
+            }
+
+                body.has-bg #btnNewFolder:hover {
+                    background: rgba(255, 255, 255, 0.9);
+                }
+
+            body.has-bg .mini-card {
+                background: rgba(255, 255, 255, 0.7);
+            }
+
+            body.has-bg .mini-empty {
+                background: rgba(255, 255, 255, 0.5);
+            }
+        /* ===== 日历：可点击 + 计划色点 + 当日详情 ===== */
+        .cal-cell {
+            cursor: pointer;
+            transition: background .15s, box-shadow .15s;
+        }
+
+            .cal-cell.empty {
+                cursor: default;
+            }
+
+            .cal-cell:not(.empty):hover {
+                box-shadow: 0 0 0 2px rgba(79,107,255,.35);
+            }
+
+            .cal-cell.selected {
+                box-shadow: 0 0 0 2px var(--accent);
+            }
+
+        .cal-dots {
+            position: absolute;
+            bottom: 4px;
+            left: 2px;
+            right: 2px;
+            display: flex;
+            gap: 2px;
+            justify-content: center;
+            flex-wrap: nowrap;
+            overflow: hidden;
+        }
+
+            .cal-dots i {
+                width: 4px;
+                height: 4px;
+                border-radius: 50%;
+                display: block;
+                flex: none;
+            }
+
+        .cal-legend {
+            display: flex;
+            gap: 16px;
+            margin-top: 10px;
+            font-size: 11.5px;
+            color: var(--dim);
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+            .cal-legend .lg-box {
+                display: inline-block;
+                width: 10px;
+                height: 10px;
+                border-radius: 3px;
+                vertical-align: middle;
+                margin-right: 4px;
+            }
+
+        .day-detail {
+            margin-top: 14px;
+            border-top: 1px dashed var(--border);
+            padding-top: 12px;
+            animation: expandIn .25s cubic-bezier(.16,1,.3,1);
+        }
+
+        .dd-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-size: 13px;
+            gap: 10px;
+        }
+
+        .dd-title {
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .dd-sum {
+            color: var(--dim);
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
+        .dd-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .dd-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border-radius: 9px;
+            background: #F9FAFB;
+            border: 1px solid var(--border);
+            font-size: 13px;
+        }
+
+        .dd-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex: none;
+        }
+
+        .dd-name {
+            font-weight: 600;
+            color: var(--text);
+            flex: none;
+        }
+
+        .dd-val {
+            color: var(--dim);
+            font-size: 12.5px;
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+            .dd-val b {
+                color: var(--text);
+                font-weight: 700;
+            }
+
+        .dd-miss {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+            font-size: 12.5px;
+            color: #9CA3AF;
+            padding: 6px 2px 0;
+        }
+
+        .dd-miss-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 3px 8px;
+            border-radius: 20px;
+            background: #FEF2F2;
+            color: #B91C1C;
+            border: 1px solid #FEE2E2;
+        }
+
+            .dd-miss-item i {
+                width: 7px;
+                height: 7px;
+                border-radius: 50%;
+                display: block;
+            }
+
+        .dd-empty {
+            font-size: 12.5px;
+            color: #9CA3AF;
+            padding: 6px 0;
+        }
+
+        body.has-bg .dd-row {
+            background: rgba(255, 255, 255, 0.6);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="app">
+        <aside id="sidebar">
+            <div class="brand">我的收藏库<small>本机运行 · 数据存在本地</small></div>
+            <nav class="nav" id="nav">
+                <div class="nav-primary" id="navPrimary"></div>
+                <div class="nav-sec-title">收藏分类</div>
+                <div class="nav-secondary" id="navSecondary"></div>
+                <div class="nav-sec-title">我的计划</div>
+                <div class="nav-secondary" id="navPlans"></div>
+            </nav>
+            <div class="side-foot">
+                <button id="btnManageTypes">✎ 编辑分类</button>
+                <button id="btnBg">🖼 更换背景图</button>
+                <button id="btnExport">⬇ 导出备份</button>
+                <button id="btnImport">⬆ 导入备份</button>
+                <input type="file" id="fileImport" accept=".json" style="display:none">
+                <input type="file" id="fileBg" accept="image/*" style="display:none">
+            </div>
+            <div class="tip">⚠ 别移动或重命名这个 HTML 文件。建议每月导出一次备份。</div>
+        </aside>
+
+        <main id="main">
+            <div class="topbar">
+                <input id="search" type="text" placeholder="搜索标题、备注、网址…">
+                <button class="btn" id="btnAdd">＋ 添加</button>
+                <div id="datetime"></div>
+            </div>
+            <div id="toolbar">
+                <div id="breadcrumb"></div>
+                <button id="btnNewFolder">
+                    <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg>
+                    <span>新建类别</span>
+                </button>
+            </div>
+            <div id="content"></div>
+        </main>
+    </div>
+
+
+    <div id="modalRoot"></div>
+    <div id="lightbox"></div>
+    <div id="toast"></div>
+    <div id="progress"><div class="pbox"><div class="t" id="progText">处理中…</div><div class="bar"><i id="progBar" style="width:0%"></i></div></div></div>
+
+    <script>
+        /* =====================================================
+           基础工具
+        ===================================================== */
+        const $ = s => document.querySelector(s);
+        const $$ = s => [...document.querySelectorAll(s)];
+        const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+        function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+        function todayStr() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+        function dateStr(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+        function fmtDate(ts) { const d = new Date(ts); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+        function daysBetween(a, b) { return Math.round((new Date(b) - new Date(a)) / 86400000); }
+        function addDays(isoStr, days) { const d = new Date(isoStr + 'T00:00:00'); d.setDate(d.getDate() + days); return dateStr(d); }
+        let toastTimer;
+        function toast(msg, isErr) { const el = $('#toast'); el.textContent = msg; el.className = isErr ? 'show err' : 'show'; clearTimeout(toastTimer); toastTimer = setTimeout(() => el.className = '', 2400); }
+        function download(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
+        function blobToDataURL(blob) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(blob); }); }
+        function dataURLToBlob(d) { const [meta, b64] = d.split(','); const mime = (meta.match(/:(.*?);/) || [, 'image/jpeg'])[1]; const bin = atob(b64); const arr = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i); return new Blob([arr], { type: mime }); }
+
+        /* =====================================================
+           v6 · Tauri 文件持久化（方案 B）
+           桌面端：数据以 JSON 文件写到 AppData 目录
+           浏览器端：自动降级为纯 IndexedDB
+        ===================================================== */
+        const IS_TAURI = typeof window !== 'undefined' && !!window.__TAURI__ && !!window.__TAURI__.fs;
+        const fsApi = IS_TAURI ? window.__TAURI__.fs : {};
+        const APP_DATA_DIR = (fsApi.BaseDirectory && fsApi.BaseDirectory.AppData) || 'AppData';
+        const DATA_FILE = 'vault-data.json';
+
+        // items 里的 blob 无法 JSON 序列化，保存前转 base64，加载时转回 Blob
+        async function serializeItemsForDisk(items) {
+            const out = [];
+            for (const it of items) {
+                const copy = { ...it };
+                if (copy.blob instanceof Blob) {
+                    try { copy.blobData = await blobToDataURL(copy.blob); } catch (e) { /* skip */ }
+                    delete copy.blob;
+                }
+                out.push(copy);
+            }
+            return out;
+        }
+        function deserializeItemsFromDisk(items) {
+            return (items || []).map(it => {
+                const copy = { ...it };
+                if (copy.blobData) {
+                    try { copy.blob = dataURLToBlob(copy.blobData); } catch (e) { /* skip */ }
+                    delete copy.blobData;
+                }
+                return copy;
+            });
+        }
+
+        async function saveToDisk() {
+            if (!IS_TAURI) return;
+            try {
+                const payload = {
+                    app: 'myVault',
+                    diskVersion: 1,
+                    savedAt: new Date().toISOString(),
+                    items: await serializeItemsForDisk(state.items),
+                    plans: state.plans,
+                    logs: state.logs,
+                    bgImage: state.bgImage || null,
+                    customTypes: state.customTypes || [],
+                    categoryOrder: state.categoryOrder || null,
+                    categoryMeta: state.categoryMeta || null,
+                };
+                await fsApi.writeTextFile(DATA_FILE, JSON.stringify(payload), { dir: APP_DATA_DIR });
+                console.log('[myVault] 已写盘:', DATA_FILE);
+            } catch (e) {
+                console.error('saveToDisk 失败:', e);
+            }
+        }
+
+        async function loadFromDisk() {
+            if (!IS_TAURI) return null;
+            try {
+                const ok = await fsApi.exists(DATA_FILE, { dir: APP_DATA_DIR });
+                if (!ok) return null;
+                const text = await fsApi.readTextFile(DATA_FILE, { dir: APP_DATA_DIR });
+                const data = JSON.parse(text);
+                if (!data || !Array.isArray(data.items)) return null;
+                return data;
+            } catch (e) {
+                console.error('loadFromDisk 失败:', e);
+                return null;
+            }
+        }
+
+        /* =====================================================
+           图标库
+        ===================================================== */
+        const ICON_LIB = {
+            grid: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>',
+            image: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>',
+            globe: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>',
+            tv: '<svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="15" rx="2" ry="2"></rect><polyline points="17 2 12 7 7 2"></polyline></svg>',
+            calendar: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>',
+            star: '<svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>',
+            heart: '<svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>',
+            book: '<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>',
+            music: '<svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>',
+            film: '<svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect><line x1="7" y1="2" x2="7" y2="22"></line><line x1="17" y1="2" x2="17" y2="22"></line><line x1="2" y1="12" x2="22" y2="12"></line><line x1="2" y1="7" x2="7" y2="7"></line><line x1="2" y1="17" x2="7" y2="17"></line><line x1="17" y1="17" x2="22" y2="17"></line><line x1="17" y1="7" x2="22" y2="7"></line></svg>',
+            game: '<svg viewBox="0 0 24 24"><line x1="6" y1="12" x2="10" y2="12"></line><line x1="8" y1="10" x2="8" y2="14"></line><line x1="15" y1="13" x2="15.01" y2="13"></line><line x1="18" y1="11" x2="18.01" y2="11"></line><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z"></path></svg>',
+            idea: '<svg viewBox="0 0 24 24"><path d="M9 18h6"></path><path d="M10 22h4"></path><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7z"></path></svg>',
+            work: '<svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>',
+            travel: '<svg viewBox="0 0 24 24"><path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"></path></svg>',
+            food: '<svg viewBox="0 0 24 24"><path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"></path><path d="M7 2v20"></path><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3zm0 0v7"></path></svg>',
+            camera: '<svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>',
+            code: '<svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>',
+            bookmark: '<svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path></svg>',
+            flag: '<svg viewBox="0 0 24 24"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path><line x1="4" y1="22" x2="4" y2="15"></line></svg>',
+            folder: '<svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>',
+            chevron: '<svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"></polyline></svg>',
+            arrowRight: '<svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>',
+            swim: '<svg viewBox="0 0 24 24"><circle cx="17" cy="6.5" r="2"></circle><path d="M2 17.5c1.6-1 3.2-1 4.8 0s3.2 1 4.8 0 3.2-1 4.8 0 3.2 1 4.8 0"></path><path d="M2 21c1.6-1 3.2-1 4.8 0s3.2 1 4.8 0 3.2-1 4.8 0 3.2 1 4.8 0"></path><path d="M6.5 14l3-3.5 3.5 2.5 4.5-2.5"></path></svg>',
+            weight: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="3"></rect><path d="M8 10l4 3 4-3"></path><path d="M9 17h6"></path></svg>',
+            fish: '<svg viewBox="0 0 24 24"><path d="M2 12s3.5-5.5 8.5-5.5c4 0 6.5 2.5 8.5 5.5-2 3-4.5 5.5-8.5 5.5-5 0-8.5-5.5-8.5-5.5z"></path><path d="M19 12l3-3v6z"></path><circle cx="7.5" cy="11" r="0.6" fill="currentColor" stroke="none"></circle></svg>',
+            droplet: '<svg viewBox="0 0 24 24"><path d="M12 2.7l-5.2 6.9a7 7 0 1 0 10.4 0z"></path></svg>',
+            run: '<svg viewBox="0 0 24 24"><circle cx="14" cy="4.5" r="1.8"></circle><path d="M9 20l2.5-5 3.5-1 2.5 4"></path><path d="M11.5 15l-2-4.5L6 9"></path><path d="M14 9l3.5 1 2.5-2"></path></svg>',
+            dumbbell: '<svg viewBox="0 0 24 24"><path d="M6.5 6.5v11"></path><path d="M3.5 8.5v7"></path><path d="M17.5 6.5v11"></path><path d="M20.5 8.5v7"></path><path d="M6.5 12h11"></path></svg>',
+            apple: '<svg viewBox="0 0 24 24"><path d="M12 7c-2-2-5-2-6.5.5S4 15 7 18c1.5 1.5 3.5 1.5 5 .5 1.5 1 3.5 1 5-.5 3-3 3-8 1.5-10.5S14 5 12 7z"></path><path d="M12 7V4"></path><path d="M12 4c1 0 2-.5 2.5-1.5"></path></svg>',
+            moon: '<svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg>',
+            sun: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"></circle><line x1="12" y1="2" x2="12" y2="4"></line><line x1="12" y1="20" x2="12" y2="22"></line><line x1="4.9" y1="4.9" x2="6.3" y2="6.3"></line><line x1="17.7" y1="17.7" x2="19.1" y2="19.1"></line><line x1="2" y1="12" x2="4" y2="12"></line><line x1="20" y1="12" x2="22" y2="12"></line><line x1="4.9" y1="19.1" x2="6.3" y2="17.7"></line><line x1="17.7" y1="6.3" x2="19.1" y2="4.9"></line></svg>',
+            coffee: '<svg viewBox="0 0 24 24"><path d="M18 8h1a4 4 0 0 1 0 8h-1"></path><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4z"></path><line x1="6" y1="2" x2="6" y2="4"></line><line x1="10" y1="2" x2="10" y2="4"></line><line x1="14" y1="2" x2="14" y2="4"></line></svg>',
+            pill: '<svg viewBox="0 0 24 24"><path d="M10.5 20.5a5.3 5.3 0 0 1-7.5-7.5l9.5-9.5a5.3 5.3 0 0 1 7.5 7.5z"></path><line x1="8.5" y1="8.5" x2="15.5" y2="15.5"></line></svg>',
+            smile: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><line x1="9" y1="9" x2="9.01" y2="9"></line><line x1="15" y1="9" x2="15.01" y2="9"></line></svg>',
+        };
+
+        /* 常用图标（图标选择器默认显示这些） */
+        const ICON_COMMON = ['star', 'heart', 'flag', 'calendar', 'bookmark', 'weight', 'swim', 'fish', 'dumbbell', 'droplet'];
+
+        const COLOR_PALETTE = ['#4F6BFF', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#6B7280'];
+        const BUILTIN_TYPES = ['image', 'site', 'anime'];
+        const DEFAULT_CATEGORY_META = {
+            image: { name: '图片', icon: 'image', color: '#4F6BFF' },
+            site: { name: '网站', icon: 'globe', color: '#10B981' },
+            anime: { name: '动漫', icon: 'tv', color: '#8B5CF6' },
+        };
+
+        /* =====================================================
+           IndexedDB
+        ===================================================== */
+        const DB_NAME = 'myVault';
+        const DB_VER = 2;
+        let db = null;
+        function openDB() {
+            return new Promise((res, rej) => {
+                let finished = false;
+                const timer = setTimeout(() => { if (finished) return; finished = true; rej(new Error('数据库打开超时，请关闭所有打开过此应用的页面后再试。')); }, 8000);
+                const req = indexedDB.open(DB_NAME, DB_VER);
+                req.onupgradeneeded = e => {
+                    const d = e.target.result;
+                    if (!d.objectStoreNames.contains('items')) { const s = d.createObjectStore('items', { keyPath: 'id' }); s.createIndex('type', 'type'); s.createIndex('updatedAt', 'updatedAt'); }
+                    if (!d.objectStoreNames.contains('plans')) { d.createObjectStore('plans', { keyPath: 'id' }); }
+                    if (!d.objectStoreNames.contains('logs')) { const s = d.createObjectStore('logs', { keyPath: 'id' }); s.createIndex('planId', 'planId'); }
+                    if (!d.objectStoreNames.contains('settings')) { d.createObjectStore('settings', { keyPath: 'key' }); }
+                };
+                req.onsuccess = e => { if (finished) return; finished = true; clearTimeout(timer); db = e.target.result; res(db); };
+                req.onerror = e => { if (finished) return; finished = true; clearTimeout(timer); rej(e.target.error); };
+                req.onblocked = () => { if (finished) return; finished = true; clearTimeout(timer); rej(new Error('数据库被其他窗口占用。')); };
+            });
+        }
+        function store(name, mode = 'readonly') { return db.transaction(name, mode).objectStore(name); }
+        function idbGetAll(name) { return new Promise((res, rej) => { const r = store(name).getAll(); r.onsuccess = () => res(r.result || []); r.onerror = () => rej(r.error); }); }
+        function idbPut(name, val) { return new Promise((res, rej) => { const r = store(name, 'readwrite').put(val); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+        function idbGet(name, key) { return new Promise((res, rej) => { const r = store(name).get(key); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+        function idbDel(name, key) { return new Promise((res, rej) => { const r = store(name, 'readwrite').delete(key); r.onsuccess = () => res(); r.onerror = () => rej(r.error); }); }
+        function idbClear(name) { return new Promise((res, rej) => { const r = store(name, 'readwrite').clear(); r.onsuccess = () => res(); r.onerror = () => rej(r.error); }); }
+
+        /* =====================================================
+           全局状态
+        ===================================================== */
+        const state = {
+            view: 'all', search: '',
+            currentFolderId: null,
+            folderPath: [],
+            expandedFolders: new Set(),
+            items: [], plans: [], logs: [],
+            shown: 0, pageSize: 60, filtered: [],
+            urlCache: new Map(), bgImage: null,
+            customTypes: [],
+            categoryMeta: { ...DEFAULT_CATEGORY_META },
+            categoryOrder: null,
+            currentPlanId: null,
+            persistEnabled: false,  // v6：启用后所有 loadAll() 都会自动写盘
+        };
+        const ANIME_STATUS = ['想看', '在看', '看完', '搁置', '弃番'];
+        const WEEK_DAYS = ['日', '一', '二', '三', '四', '五', '六'];
+
+        function getTypeInfo(typeKey) {
+            if (state.categoryMeta[typeKey]) return state.categoryMeta[typeKey];
+            const ct = state.customTypes.find(t => t.id === typeKey);
+            if (ct) return { name: ct.name, icon: ct.icon, color: ct.color };
+            return { name: '其他', icon: 'star', color: '#6B7280' };
+        }
+
+        /* =====================================================
+           背景图
+        ===================================================== */
+        async function loadBgImage() {
+            const setting = await idbGet('settings', 'bgImage');
+            if (setting && setting.value) { state.bgImage = setting.value; applyBgImage(setting.value); }
+        }
+        function applyBgImage(dataUrl) { document.body.classList.add('has-bg'); document.body.style.backgroundImage = `url(${dataUrl})`; }
+        function removeBgImage() { document.body.classList.remove('has-bg'); document.body.style.backgroundImage = 'none'; }
+        async function handleBgUpload(file) {
+            if (!file) return;
+            if (file.size > 10 * 1024 * 1024) {
+                try { showProgress('正在压缩背景图…', 0); const { blob } = await compressImage(file, 1920, 0.85); const dataUrl = await blobToDataURL(blob); setProgress(1); hideProgress(); await saveBg(dataUrl); }
+                catch (e) { hideProgress(); toast('背景图处理失败', true); }
+            } else { const dataUrl = await blobToDataURL(file); await saveBg(dataUrl); }
+        }
+        async function saveBg(dataUrl) {
+            try {
+                await idbPut('settings', { key: 'bgImage', value: dataUrl });
+                state.bgImage = dataUrl;
+                applyBgImage(dataUrl);
+                if (state.persistEnabled) await saveToDisk();
+                toast('背景已更新');
+            }
+            catch (e) { toast('背景保存失败，可能图片太大', true); }
+        }
+
+        /* =====================================================
+           分类元信息 + 顺序
+        ===================================================== */
+        async function loadCustomTypes() { const s = await idbGet('settings', 'customTypes'); state.customTypes = (s && s.value) || []; }
+        async function saveCustomTypes() { await idbPut('settings', { key: 'customTypes', value: state.customTypes }); }
+        async function loadCategoryMeta() { const s = await idbGet('settings', 'categoryMeta'); state.categoryMeta = (s && s.value) ? { ...DEFAULT_CATEGORY_META, ...s.value } : { ...DEFAULT_CATEGORY_META }; }
+        async function saveCategoryMeta() { await idbPut('settings', { key: 'categoryMeta', value: state.categoryMeta }); }
+        async function loadCategoryOrder() { const s = await idbGet('settings', 'categoryOrder'); state.categoryOrder = (s && s.value) || null; }
+        async function saveCategoryOrder(order) { state.categoryOrder = order; await idbPut('settings', { key: 'categoryOrder', value: order }); }
+        function defaultOrder() { return [...BUILTIN_TYPES]; }
+
+        /* =====================================================
+           时间显示
+        ===================================================== */
+        function updateClock() {
+            const now = new Date();
+            const y = now.getFullYear();
+            const m = String(now.getMonth() + 1).padStart(2, '0');
+            const d = String(now.getDate()).padStart(2, '0');
+            const hh = String(now.getHours()).padStart(2, '0');
+            const mm = String(now.getMinutes()).padStart(2, '0');
+            const ss = String(now.getSeconds()).padStart(2, '0');
+            const el = $('#datetime');
+            if (el) el.textContent = `${y}年${m}月${d}日 ${hh}:${mm}:${ss}`;
+        }
+
+        /* =====================================================
+           分类管理（收藏）
+        ===================================================== */
+        function openTypeManager() {
+            const builtinList = BUILTIN_TYPES.map(key => { const m = state.categoryMeta[key]; return { id: key, name: m.name, icon: m.icon, color: m.color, isBuiltin: true }; });
+            const customList = state.customTypes.map(t => ({ id: t.id, name: t.name, icon: t.icon, color: t.color, isBuiltin: false }));
+            const all = [...builtinList, ...customList];
+            const listHTML = all.length
+                ? all.map(t => `<div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;background:#F9FAFB;margin-bottom:8px">
+                    <div style="width:32px;height:32px;border-radius:8px;background:${t.color}1a;display:flex;align-items:center;justify-content:center">
+                      <span style="color:${t.color};display:flex;width:18px;height:18px">${ICON_LIB[t.icon] || ICON_LIB.star}</span>
+                    </div>
+                    <span style="flex:1;font-size:14px;font-weight:500">${esc(t.name)}${t.isBuiltin ? '<span style="font-size:11px;color:#9CA3AF;margin-left:8px;font-weight:400">内置</span>' : ''}</span>
+                    <button data-edit="${t.id}" style="border:0;background:transparent;color:var(--accent);cursor:pointer;font-size:13px;font-family:inherit;padding:4px 8px">编辑</button>
+                    ${t.isBuiltin ? '' : `<button data-del="${t.id}" style="border:0;background:transparent;color:var(--danger);cursor:pointer;font-size:13px;font-family:inherit;padding:4px 8px">删除</button>`}
+                  </div>`).join('')
+                : '<div style="color:#9CA3AF;font-size:13px;padding:12px 0;text-align:center">还没有分类</div>';
+
+            openModal(`<h3>编辑分类</h3>
+                <div style="font-size:12px;color:var(--dim);margin-bottom:12px">提示：在左侧栏可直接拖拽分类调整顺序。内置分类只能改名称/图标/颜色，不能删除。</div>
+                <div style="max-height:360px;overflow-y:auto;margin-bottom:16px">${listHTML}</div>
+                <div class="modal-actions"><span class="sp"></span><button class="btn ghost" id="tm-close">关闭</button><button class="btn" id="tm-new">＋ 新建分类</button></div>`);
+
+            $('#tm-close').onclick = closeModal;
+            $('#tm-new').onclick = () => openTypeEditor(null);
+            $$('[data-edit]').forEach(b => {
+                b.onclick = () => {
+                    const id = b.dataset.edit;
+                    if (BUILTIN_TYPES.includes(id)) { const m = state.categoryMeta[id]; openTypeEditor({ id, name: m.name, icon: m.icon, color: m.color, isBuiltin: true }); }
+                    else { const t = state.customTypes.find(x => x.id === id); if (t) openTypeEditor({ id: t.id, name: t.name, icon: t.icon, color: t.color, isBuiltin: false }); }
+                };
+            });
+            $$('[data-del]').forEach(b => { b.onclick = () => deleteCustomType(b.dataset.del); });
+        }
+
+        async function deleteCustomType(id) {
+            const t = state.customTypes.find(x => x.id === id); if (!t) return;
+            const related = state.items.filter(i => i.type === id);
+            let msg = `确定删除分类「${t.name}」吗？`;
+            if (related.length) msg += `\n\n该分类下有 ${related.length} 条收藏，删除分类会一并删除这些收藏。`;
+            if (!confirm(msg)) return;
+            for (const it of related) { revokeURL(it.id); await idbDel('items', it.id); }
+            state.customTypes = state.customTypes.filter(x => x.id !== id);
+            await saveCustomTypes();
+            if (state.view === id) state.view = 'all';
+            await loadAll();
+            renderNav(); renderContent();
+            closeModal();
+            toast('分类已删除');
+        }
+
+        function openTypeEditor(type) {
+            const isNew = !type; const isBuiltin = type ? type.isBuiltin : false;
+            const t = type || { name: '', icon: 'star', color: '#4F6BFF' };
+            const iconKeys = Object.keys(ICON_LIB);
+
+            openModal(`<h3>${isNew ? '新建分类' : '编辑分类'}${isBuiltin ? '<span style="font-size:12px;color:#9CA3AF;margin-left:8px;font-weight:400">内置</span>' : ''}</h3>
+                <label>分类名称<input type="text" id="t-name" value="${esc(t.name)}" placeholder="比如：音乐 / 游戏 / 书单 / 灵感"></label>
+                                       <div style="display:block;font-size:13px;color:var(--dim);margin-bottom:14px;font-weight:500">选择图标
+                  <div class="icon-picker" id="iconPicker">${ICON_COMMON.map(k => `<div class="icon-opt ${t.icon === k ? 'selected' : ''}" data-icon="${k}">${ICON_LIB[k]}</div>`).join('')}</div>
+                  <button type="button" class="btn ghost" id="iconMoreBtn" style="width:100%;margin-top:8px;font-size:12.5px;padding:8px">＋ 更多图标</button>
+                  <div class="icon-picker" id="iconPickerMore" style="display:none;max-height:240px;overflow-y:auto;margin-top:8px">${iconKeys.map(k => `<div class="icon-opt ${t.icon === k ? 'selected' : ''}" data-icon="${k}">${ICON_LIB[k]}</div>`).join('')}</div>
+                </div>
+                <div style="display:block;font-size:13px;color:var(--dim);margin-bottom:14px;font-weight:500">选择颜色 ... / 颜色 ... </div>
+                <div class="modal-actions"><span class="sp"></span><button class="btn ghost" id="t-cancel">取消</button><button class="btn" id="t-save">保存</button></div>`);
+
+            let pickedIcon = t.icon; let pickedColor = t.color;
+            $$('#iconPicker .icon-opt, #iconPickerMore .icon-opt').forEach(el => {
+                el.onclick = () => {
+                    pickedIcon = el.dataset.icon;
+                    $$('#iconPicker .icon-opt, #iconPickerMore .icon-opt').forEach(x => x.classList.toggle('selected', x.dataset.icon === el.dataset.icon));
+                };
+            });
+            const moreBtnT = $('#iconMoreBtn');
+            if (moreBtnT) moreBtnT.onclick = () => {
+                const m = $('#iconPickerMore');
+                const showing = m.style.display !== 'none';
+                m.style.display = showing ? 'none' : 'grid';
+                moreBtnT.textContent = showing ? '＋ 更多图标' : '− 收起更多';
+            };
+            $$('#colorPicker .color-opt').forEach(el => { el.onclick = () => { pickedColor = el.dataset.color; $$('#colorPicker .color-opt').forEach(x => x.classList.toggle('selected', x === el)); }; });
+
+            $('#t-cancel').onclick = closeModal;
+            $('#t-save').onclick = async () => {
+                const name = $('#t-name').value.trim();
+                if (!name) { toast('请填写分类名称', true); return; }
+                if (isBuiltin) { state.categoryMeta[t.id] = { name, icon: pickedIcon, color: pickedColor }; await saveCategoryMeta(); }
+                else if (isNew) {
+                    const id = 'custom_' + uid();
+                    state.customTypes.push({ id, name, icon: pickedIcon, color: pickedColor });
+                    await saveCustomTypes();
+                    const order = state.categoryOrder ? [...state.categoryOrder] : defaultOrder();
+                    order.push(id);
+                    await saveCategoryOrder(order);
+                } else {
+                    const idx = state.customTypes.findIndex(x => x.id === t.id);
+                    if (idx >= 0) state.customTypes[idx] = { id: t.id, name, icon: pickedIcon, color: pickedColor };
+                    await saveCustomTypes();
+                }
+                await loadAll(); renderNav(); closeModal(); toast('分类已保存');
+                setTimeout(() => openTypeManager(), 120);
+            };
+        }
+
+        /* =====================================================
+           拖拽排序
+        ===================================================== */
+        let dragSrcEl = null;
+        function bindDragEvents() {
+            const items = document.querySelectorAll('#navSecondary button[data-view]');
+            items.forEach(item => {
+                item.draggable = true;
+                item.addEventListener('dragstart', e => { dragSrcEl = item; item.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', item.dataset.view); } catch (err) { } });
+                item.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (item === dragSrcEl) return; const rect = item.getBoundingClientRect(); const before = e.clientY < rect.top + rect.height / 2; item.classList.toggle('drop-before', before); item.classList.toggle('drop-after', !before); });
+                item.addEventListener('dragleave', () => { item.classList.remove('drop-before', 'drop-after'); });
+                item.addEventListener('drop', async e => {
+                    e.preventDefault();
+                    if (item === dragSrcEl) { item.classList.remove('drop-before', 'drop-after'); return; }
+                    const rect = item.getBoundingClientRect(); const before = e.clientY < rect.top + rect.height / 2;
+                    const parent = item.parentElement;
+                    if (before) parent.insertBefore(dragSrcEl, item); else parent.insertBefore(dragSrcEl, item.nextSibling);
+                    item.classList.remove('drop-before', 'drop-after');
+                    const newOrder = [...document.querySelectorAll('#navSecondary button[data-view]')].map(b => b.dataset.view);
+                    await saveCategoryOrder(newOrder); toast('顺序已保存');
+                });
+                item.addEventListener('dragend', () => { item.classList.remove('dragging'); document.querySelectorAll('.drop-before, .drop-after').forEach(el => el.classList.remove('drop-before', 'drop-after')); dragSrcEl = null; });
+            });
+        }
+
+        /* =====================================================
+           图片压缩 / 视频截帧
+        ===================================================== */
+        function compressImage(file, maxSide = 900, quality = 0.82) {
+            return new Promise((res, rej) => {
+                const img = new Image(); const url = URL.createObjectURL(file);
+                img.onload = () => {
+                    let w = img.naturalWidth, h = img.naturalHeight;
+                    const scale = Math.min(1, maxSide / Math.max(w, h));
+                    w = Math.max(1, Math.round(w * scale)); h = Math.max(1, Math.round(h * scale));
+                    const c = document.createElement('canvas'); c.width = w; c.height = h;
+                    const ctx = c.getContext('2d'); ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h);
+                    ctx.drawImage(img, 0, 0, w, h);
+                    c.toBlob(b => { URL.revokeObjectURL(url); b ? res({ blob: b, w, h }) : rej(new Error('压缩失败')); }, 'image/jpeg', quality);
+                };
+                img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('图片读取失败')); };
+                img.src = url;
+            });
+        }
+        function grabVideoFrame(file, maxSide = 900) {
+            return new Promise((res, rej) => {
+                const v = document.createElement('video'); v.preload = 'metadata'; v.muted = true; v.playsInline = true;
+                const url = URL.createObjectURL(file); let done = false;
+                const finish = () => {
+                    if (done) return; done = true;
+                    try {
+                        let w = v.videoWidth, h = v.videoHeight; if (!w || !h) { URL.revokeObjectURL(url); return rej(new Error('无法读取视频尺寸')); }
+                        const scale = Math.min(1, maxSide / Math.max(w, h)); w = Math.round(w * scale); h = Math.round(h * scale);
+                        const c = document.createElement('canvas'); c.width = w; c.height = h; c.getContext('2d').drawImage(v, 0, 0, w, h);
+                        c.toBlob(b => { URL.revokeObjectURL(url); b ? res({ blob: b, w, h }) : rej(new Error('截帧失败')); }, 'image/jpeg', 0.82);
+                    } catch (err) { URL.revokeObjectURL(url); rej(err); }
+                };
+                v.onloadeddata = () => { const t = (v.duration && isFinite(v.duration)) ? Math.min(1, v.duration / 3) : 0; if (t > 0) { try { v.currentTime = t; } catch (e) { finish(); } } else finish(); };
+                v.onseeked = finish; v.onerror = () => { URL.revokeObjectURL(url); rej(new Error('视频读取失败')); };
+                setTimeout(() => { if (!done) finish(); }, 6000); v.src = url;
+            });
+        }
+
+        /* =====================================================
+           数据加载
+           v6：末尾自动写盘（桌面端）
+        ===================================================== */
+        async function loadAll() {
+            state.items = await idbGetAll('items');
+            state.plans = await idbGetAll('plans');
+            state.logs = await idbGetAll('logs');
+            state.items.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+            if (state.persistEnabled) {
+                try { await saveToDisk(); } catch (e) { console.error('自动写盘失败:', e); }
+            }
+        }
+        function getURL(item) { if (!item.blob) return ''; if (state.urlCache.has(item.id)) return state.urlCache.get(item.id); const u = URL.createObjectURL(item.blob); state.urlCache.set(item.id, u); return u; }
+        function revokeURL(id) { if (state.urlCache.has(id)) { URL.revokeObjectURL(state.urlCache.get(id)); state.urlCache.delete(id); } }
+
+        /* =====================================================
+           渲染 —— 侧栏
+        ===================================================== */
+        function renderNav() {
+            const allCount = state.items.filter(i => !i.isFolder).length;
+            const planCount = state.plans.length;
+            const allActive = state.view === 'all';
+            const planActive = state.view === 'plan' && !state.currentPlanId;
+
+            $('#navPrimary').innerHTML = `
+                <button data-view="all" class="${allActive ? 'active' : ''}">
+                  ${ICON_LIB.grid}<span class="label">全部收藏</span><span class="count">${allCount || ''}</span>
+                </button>
+                <button data-view="plan" class="${planActive ? 'active' : ''}">
+                  ${ICON_LIB.calendar}<span class="label">全部计划</span><span class="count">${planCount || ''}</span>
+                </button>`;
+
+            const builtinSecond = BUILTIN_TYPES.map(key => { const m = state.categoryMeta[key]; return { key, name: m.name, icon: m.icon, color: m.color }; });
+            const customSecond = state.customTypes.map(t => ({ key: t.id, name: t.name, icon: t.icon, color: t.color }));
+            const all = [...builtinSecond, ...customSecond];
+            const order = state.categoryOrder && state.categoryOrder.length ? state.categoryOrder : defaultOrder();
+            all.sort((a, b) => { const ai = order.indexOf(a.key); const bi = order.indexOf(b.key); if (ai === -1 && bi === -1) return 0; if (ai === -1) return 1; if (bi === -1) return -1; return ai - bi; });
+
+            $('#navSecondary').innerHTML = all.map(t => {
+                const active = state.view === t.key;
+                const count = state.items.filter(i => i.type === t.key && !i.isFolder).length;
+                const style = active ? `background:${t.color}1a;color:${t.color};font-weight:600;` : '';
+                return `<button data-view="${esc(t.key)}" class="${active ? 'active' : ''}" style="${style}" draggable="true">
+                  ${ICON_LIB[t.icon] || ICON_LIB.star}<span class="label">${esc(t.name)}</span><span class="count">${count || ''}</span>
+                </button>`;
+            }).join('');
+
+            // 计划列表
+            const planList = state.plans.map(p => {
+                const active = state.currentPlanId === p.id;
+                const style = active ? `background:${p.color}1a;color:${p.color};font-weight:600;` : '';
+                return `<button data-plan-id="${p.id}" class="${active ? 'active' : ''}" style="${style}">
+                            ${ICON_LIB[p.icon] || ICON_LIB.star}<span class="label">${esc(p.name)}</span>
+                        </button>`;
+            }).join('') || '<div style="font-size:12px;color:#9CA3AF;padding:8px 10px;">暂无计划</div>';
+            $('#navPlans').innerHTML = planList;
+
+            bindDragEvents();
+        }
+
+        /* =====================================================
+           渲染 —— 工具条
+        ===================================================== */
+        function renderToolbar() {
+            const bc = $('#breadcrumb');
+            const crumbItems = [];
+            if (state.view === 'all') crumbItems.push({ label: '全部收藏', icon: 'grid', color: '#4F6BFF', type: 'root' });
+            else if (state.view === 'plan') {
+                if (state.currentPlanId) {
+                    const p = state.plans.find(x => x.id === state.currentPlanId);
+                    crumbItems.push({ label: '全部计划', icon: 'calendar', color: '#8B5CF6', type: 'plan-root' });
+                    if (p) crumbItems.push({ label: p.name, icon: p.icon || 'calendar', color: p.color || '#8B5CF6', type: 'plan-detail' });
+                } else {
+                    crumbItems.push({ label: '全部计划', icon: 'calendar', color: '#8B5CF6', type: 'root' });
+                }
+            }
+            else {
+                const info = getTypeInfo(state.view);
+                crumbItems.push({ label: info.name, icon: info.icon, color: info.color, type: 'root' });
+                state.folderPath.forEach((f, i) => crumbItems.push({ label: f.title, icon: 'folder', color: info.color, type: 'folder', idx: i, id: f.id }));
+            }
+            bc.innerHTML = crumbItems.map((c, i) => {
+                const isLast = i === crumbItems.length - 1;
+                const cls = isLast ? 'crumb current' : 'crumb';
+                const iconHTML = c.type === 'folder' ? `<span class="crumb-icon" style="color:${c.color}">${ICON_LIB.folder}</span>` : '';
+                return `<span class="${cls}" data-crumb-idx="${i}" data-crumb-type="${c.type}" ${c.idx !== undefined ? `data-folder-idx="${c.idx}"` : ''}>${iconHTML}${esc(c.label)}</span>${isLast ? '' : '<span class="sep">›</span>'}`;
+            }).join('');
+            $('#btnNewFolder').style.display = (state.view === 'plan' || state.view === 'all') ? 'none' : 'inline-flex';
+
+            $$('#breadcrumb .crumb').forEach(el => {
+                if (el.classList.contains('current')) return;
+                el.onclick = () => {
+                    const type = el.dataset.crumbType;
+                    if (type === 'root') { state.currentFolderId = null; state.folderPath = []; state.expandedFolders.clear(); }
+                    else if (type === 'plan-root') { state.currentPlanId = null; }
+                    else if (type === 'folder') {
+                        const idx = parseInt(el.dataset.folderIdx, 10);
+                        state.folderPath = state.folderPath.slice(0, idx + 1);
+                        state.currentFolderId = state.folderPath[state.folderPath.length - 1].id;
+                        state.expandedFolders.clear();
+                    }
+                    renderToolbar(); renderContent(true);
+                };
+            });
+        }
+
+        /* =====================================================
+           渲染 —— 内容区
+        ===================================================== */
+        function renderContent(animate = true) {
+            const c = $('#content');
+            renderToolbar();
+
+            if (state.view === 'plan') {
+                try { renderPlans(c); }
+                catch (err) { console.error('renderPlans 出错:', err); c.innerHTML = `<div class="empty"><div class="big">⚠️</div><div>渲染计划时出错</div><div style="font-size:12.5px">${esc(err.message || String(err))}</div></div>`; }
+                triggerAnim(c, animate); return;
+            }
+
+            if (state.view === 'all') {
+                try { renderCategoryEntries(c); }
+                catch (err) { console.error('renderCategoryEntries 出错:', err); }
+                triggerAnim(c, animate);
+                return;
+            }
+
+            state.filtered = filterItems();
+            state.shown = Math.min(state.pageSize, state.filtered.length);
+            if (!state.filtered.length) {
+                c.innerHTML = `<div class="empty"><div class="big">📭</div><div>这个分类下还没有内容</div><div style="font-size:12.5px">点右上角「＋ 添加」开始收藏</div></div>`;
+                triggerAnim(c, animate); return;
+            }
+            c.innerHTML = `<div class="grid" id="grid"></div>`; appendCards();
+            triggerAnim(c, animate);
+        }
+        function triggerAnim(c, on) { if (!on) return; c.classList.remove('animating'); void c.offsetWidth; c.classList.add('animating'); }
+
+        /* ===== 全部收藏视图：显示所有大类别 ===== */
+        function renderCategoryEntries(c) {
+            const entries = [];
+            BUILTIN_TYPES.forEach(key => {
+                const m = state.categoryMeta[key];
+                const count = state.items.filter(i => i.type === key && !i.isFolder).length;
+                entries.push({ key, name: m.name, icon: m.icon, color: m.color, count });
+            });
+            state.customTypes.forEach(t => {
+                const count = state.items.filter(i => i.type === t.id && !i.isFolder).length;
+                entries.push({ key: t.id, name: t.name, icon: t.icon, color: t.color, count });
+            });
+
+            if (!entries.length) {
+                c.innerHTML = `<div class="empty"><div class="big">📭</div><div>还没有任何分类</div><div style="font-size:12.5px">点左下角「编辑分类」新建分类</div></div>`;
+                return;
+            }
+
+            c.innerHTML = `<div class="cat-list">${entries.map((e, i) => `
+                <div class="cat-entry" data-cat="${esc(e.key)}" style="animation-delay:${Math.min(i * 40, 400)}ms">
+                  <div class="cat-icon-box" style="color:${e.color};background:${e.color}1a">${ICON_LIB[e.icon] || ICON_LIB.star}</div>
+                  <div class="cat-info">
+                    <div class="cat-name">${esc(e.name)}</div>
+                    <div class="cat-sub">${e.count} 项</div>
+                  </div>
+                  <div class="cat-arrow">${ICON_LIB.chevron}</div>
+                </div>
+              `).join('')}</div>`;
+        }
+
+        /* ===== 分类视图：文件夹 + 内容 ===== */
+        function filterItems() {
+            let list = state.items;
+            list = list.filter(i => i.type === state.view);
+            if (state.currentFolderId) {
+                list = list.filter(i => i.parentId === state.currentFolderId);
+            } else {
+                list = list.filter(i => !i.parentId);
+            }
+
+            const q = state.search.trim().toLowerCase();
+            if (q) {
+                list = list.filter(i => {
+                    const hay = [i.title, i.note, i.url, i.source, i.status].filter(Boolean).join(' ').toLowerCase();
+                    return hay.includes(q);
+                });
+            }
+
+            list.sort((a, b) => {
+                if (a.isFolder && !b.isFolder) return -1;
+                if (!a.isFolder && b.isFolder) return 1;
+                return (b.updatedAt || 0) - (a.updatedAt || 0);
+            });
+            return list;
+        }
+
+        function appendCards() {
+            const grid = $('#grid'); if (!grid) return;
+            const slice = state.filtered.slice(state.shown - Math.min(state.pageSize, state.shown), state.shown);
+            const startIdx = state.shown - slice.length;
+            const html = slice.map((it, i) => cardHTML(it, startIdx + i)).join('');
+            grid.insertAdjacentHTML('beforeend', html);
+        }
+
+        function cardHTML(it, idx = 0) {
+            const delay = Math.min(idx * 25, 400);
+            const animStyle = `style="animation-delay:${delay}ms"`;
+
+            if (it.isFolder) {
+                const info = getTypeInfo(it.type);
+                const children = state.items.filter(x => x.parentId === it.id);
+                const subCount = children.length;
+                const isExpanded = state.expandedFolders.has(it.id);
+
+                const folderRow = `<div class="card folder" data-id="${it.id}" data-act="toggle-folder">
+                  <div class="folder-icon-box" style="color:${info.color};background:${info.color}1a">
+                    ${ICON_LIB.folder}
+                  </div>
+                  <div class="folder-info">
+                    <div class="folder-title">${esc(it.title || '未命名类别')}</div>
+                    <div class="folder-sub">${subCount} 项</div>
+                  </div>
+                  <div class="folder-arrow" style="${isExpanded ? 'transform: rotate(90deg);' : ''}">${ICON_LIB.chevron}</div>
+                  <button class="folder-enter-btn" data-id="${it.id}" data-act="enter-folder" title="进入该类别">
+                    ${ICON_LIB.arrowRight}
+                  </button>
+                  <button class="folder-edit-btn" data-id="${it.id}" data-act="edit" title="编辑">✎</button>
+                </div>`;
+
+                let expandHTML = '';
+                if (isExpanded) {
+                    if (children.length) {
+                        expandHTML = `<div class="folder-expand"><div class="mini-grid">${children.map((c, i) => miniCardHTML(c, i)).join('')}</div></div>`;
+                    } else {
+                        expandHTML = `<div class="folder-expand"><div class="mini-empty">这个类别还没有内容</div></div>`;
+                    }
+                }
+
+                return `<div class="folder-block" ${animStyle}>${folderRow}${expandHTML}</div>`;
+            }
+
+            return miniCardHTML(it, idx);
+        }
+
+        function miniCardHTML(it, idx = 0) {
+            const delay = Math.min(idx * 20, 300);
+            const animStyle = `style="animation-delay:${delay}ms"`;
+
+            if (it.isFolder) {
+                const info = getTypeInfo(it.type);
+                return `<div class="mini-card mini-folder" data-id="${it.id}" data-act="enter-folder" ${animStyle}>
+                  <div class="mini-folder-icon" style="color:${info.color};background:${info.color}1a">${ICON_LIB.folder}</div>
+                  <div class="mini-title">${esc(it.title || '未命名')}</div>
+                </div>`;
+            }
+
+            const info = getTypeInfo(it.type);
+            const u = getURL(it);
+            let inner = '';
+            if (it.type === 'image' && u) {
+                inner = `<img src="${u}" loading="lazy" alt="">`;
+            } else if (it.type === 'site') {
+                let host = ''; try { host = new URL(it.url).hostname.replace(/^www\./, ''); } catch (e) { host = it.url || ''; }
+                const letter = (it.title || host || '?').trim().charAt(0).toUpperCase();
+                inner = `<div class="mini-ph">${esc(letter)}</div>`;
+            } else if (u) {
+                inner = `<img src="${u}" loading="lazy" alt="">`;
+            } else {
+                inner = `<div class="mini-ph-icon" style="color:${info.color}">${ICON_LIB[info.icon] || ICON_LIB.star}</div>`;
+            }
+
+            let act = 'edit';
+            if (it.type === 'image' && u) act = 'view';
+            else if (it.url) act = 'open';
+
+            return `<div class="mini-card" data-id="${it.id}" data-act="${act}" ${animStyle}>
+                ${inner}
+                <button class="editbtn" data-id="${it.id}" data-act="edit" title="编辑">✎</button>
+                <div class="mini-title">${esc(it.title || '未命名')}</div>
+              </div>`;
+        }
+
+        /* =====================================================
+           渲染 —— 计划（核心重构部分）
+        ===================================================== */
+        function renderPlans(c) {
+            // 如果指定了某个计划，只显示该计划详情
+            if (state.currentPlanId) {
+                const p = state.plans.find(x => x.id === state.currentPlanId);
+                if (!p) { state.currentPlanId = null; renderContent(false); return; }
+                c.innerHTML = `<div class="plan-layout">
+                            <div style="display:flex;justify-content:space-between;align-items:center;">
+                                <h2 style="font-size:18px;font-weight:700;color:var(--text);">${esc(p.name)}</h2>
+                                <button class="btn ghost" id="btnBackToPlans" style="font-size:13px;padding:8px 14px;">← 返回全部计划</button>
+                            </div>
+                            <div id="planDetailCard"></div>
+                        </div>`;
+                const detailContainer = $('#planDetailCard');
+                detailContainer.innerHTML = planCardHTML(p, 0, true);
+                $('#btnBackToPlans').onclick = () => { state.currentPlanId = null; renderNav(); renderContent(true); };
+                return;
+            }
+
+            // 全部计划视图：大日历 + 提醒 + 计划卡片列表
+            const today = todayStr();
+            let calendarHTML = renderCalendar();
+            let reminderHTML = renderReminders();
+            let plansHTML = state.plans.length
+                ? state.plans.map((p, i) => planCardHTML(p, i)).join('')
+                : `<div class="empty"><div class="big">🎯</div><div>还没有计划</div><div style="font-size:12.5px">点右上角「＋ 添加」新建一个计划</div></div>`;
+
+            c.innerHTML = `<div class="plan-layout">
+                        ${calendarHTML}
+                        ${reminderHTML}
+                        <div style="display:flex;justify-content:space-between;align-items:center;">
+                            <h3 style="font-size:16px;font-weight:700;color:var(--text);">我的计划</h3>
+                            <button class="btn" id="btnNewPlanTop" style="font-size:13px;padding:8px 16px;">＋ 新建计划</button>
+                        </div>
+                        <div style="display:flex;flex-direction:column;gap:16px;">${plansHTML}</div>
+                    </div>`;
+
+            if ($('#btnNewPlanTop')) $('#btnNewPlanTop').onclick = () => openPlanEditor(null);
+        }
+
+        /* ===== 大日历渲染 ===== */
+        let currentCalMonth = new Date();
+        let selectedCalDate = null;
+
+        function renderCalendar() {
+            const y = currentCalMonth.getFullYear();
+            const m = currentCalMonth.getMonth();
+            const firstDay = new Date(y, m, 1).getDay();
+            const daysInMonth = new Date(y, m + 1, 0).getDate();
+            const today = todayStr();
+            const plans = state.plans;
+            const planTotal = plans.length;
+
+            let cells = '';
+            for (let i = 0; i < firstDay; i++) cells += `<div class="cal-cell empty"></div>`;
+            for (let d = 1; d <= daysInMonth; d++) {
+                const ds = `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+                const dayLogs = state.logs.filter(l => l.date === ds);
+                const donePlanIds = new Set(dayLogs.map(l => l.planId));
+                const isToday = ds === today;
+                const isPast = ds < today;
+                const hasLog = dayLogs.length > 0;
+
+                let cls = 'cal-cell';
+                if (isToday) cls += ' today';
+                const planExistsOn = planTotal > 0 && plans.some(p => {
+                    if (p.kind === 'record') return false;   // 记录型不参与未打卡判定
+                    const created = p.createdAt ? dateStr(new Date(p.createdAt)) : null;
+                    return !created || created <= ds;        // 没有创建日期就当作一直存在
+                });
+                if (hasLog) cls += ' has-log';
+                else if (isPast && planExistsOn) cls += ' missed';
+                if (selectedCalDate === ds) cls += ' selected';
+
+                let dots = '';
+                if (planTotal) {
+                    const shown = plans.slice(0, 6);
+                    dots = `<div class="cal-dots">${shown.map(p =>
+                        `<i style="background:${donePlanIds.has(p.id) ? (p.color || '#4F6BFF') : '#E5E7EB'}"></i>`
+                    ).join('')}</div>`;
+                }
+
+                cells += `<div class="${cls}" data-date="${ds}" title="${ds} 点击查看详情">${d}${dots}</div>`;
+            }
+
+            const detailHTML = selectedCalDate ? renderDayDetail(selectedCalDate) : '';
+            const monthNames = ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月'];
+
+            return `<div class="calendar-box">
+                        <div class="cal-head">
+                            <div class="cal-title">${y}年 ${monthNames[m]}</div>
+                            <div class="cal-nav">
+                                <button id="calPrev">‹</button>
+                                <button id="calNext">›</button>
+                            </div>
+                        </div>
+                        <div class="cal-grid">
+                            ${WEEK_DAYS.map(w => `<div class="cal-w">${w}</div>`).join('')}
+                            ${cells}
+                        </div>
+                        <div class="cal-legend">
+                            <span><span class="lg-box" style="background:#ECFDF5;border:1px solid #10B981;"></span>有打卡</span>
+                            <span><span class="lg-box" style="background:#FEF2F2;border:1px solid #EF4444;"></span>未打卡</span>
+                            <span><span class="lg-box" style="background:#EEF2FF;border:1px solid #4F6BFF;"></span>今天</span>
+                            <span style="color:#9CA3AF">· 格内小圆点＝各计划，彩色＝已打卡，灰色＝未打卡，点击日期看详情</span>
+                        </div>
+                        ${detailHTML}
+                    </div>`;
+        }
+
+        /* ===== 某一天的计划详情 ===== */
+        function renderDayDetail(ds) {
+            const dayLogs = state.logs.filter(l => l.date === ds);
+            const donePlanIds = new Set(dayLogs.map(l => l.planId));
+            const rows = [];
+            const missing = [];
+            const activePlans = state.plans.filter(p => p.kind !== 'record');   // 记录型不计入待打卡统计
+
+            state.plans.forEach(p => {
+                const color = p.color || '#4F6BFF';
+                const pLogs = dayLogs.filter(l => l.planId === p.id);
+                if (!pLogs.length) {
+                    if (p.kind !== 'record') missing.push({ name: p.name, color });
+                    return;
+                }
+
+                const isNum = p.kind === 'number';
+                const parts = pLogs.map(l => {
+                    const en = (p.entries || []).find(x => x.id === l.entryId);
+                    const nm = en ? en.name : '记录';
+                    return isNum
+                        ? `${esc(nm)}：<b>${esc(String(l.value))}</b>${p.unit ? ' ' + esc(p.unit) : ''}`
+                        : esc(nm);
+                });
+
+                rows.push(`<div class="dd-row">
+                            <span class="dd-dot" style="background:${color}"></span>
+                            <span class="dd-name">${esc(p.name)}</span>
+                            <span class="dd-val">${parts.join('　·　')}</span>
+                        </div>`);
+            });
+
+            const missingHTML = missing.length
+                ? `<div class="dd-miss">未打卡：
+                            ${missing.map(mm => `<span class="dd-miss-item"><i style="background:${mm.color}"></i>${esc(mm.name)}</span>`).join('')}
+                       </div>`
+                : '';
+
+            const body = (rows.length || missingHTML)
+                ? `${rows.join('')}${missingHTML}`
+                : '<div class="dd-empty">还没有任何计划</div>';
+
+            return `<div class="day-detail">
+                        <div class="dd-head">
+                            <span class="dd-title">${esc(ds)} 打卡详情</span>
+                                                    <span class="dd-sum">${activePlans.filter(ap => donePlanIds.has(ap.id)).length} / ${activePlans.length} 个计划已打卡</span>
+                        </div>
+                        <div class="dd-list">${body}</div>
+                    </div>`;
+        }
+
+        /* ===== 提醒渲染 ===== */
+        function renderReminders() {
+            const today = todayStr();
+            const dueItems = [];
+
+            state.plans.forEach(p => {
+                // 数值型计划：每天提醒
+                if (p.kind === 'number') {
+                    const hasLogToday = state.logs.some(l => l.planId === p.id && l.date === today);
+                    if (!hasLogToday) {
+                        dueItems.push({ planId: p.id, planName: p.name, text: `${p.name} 今日还未记录体重`, entryId: p.entries[0]?.id });
+                    }
+                }
+                // 打卡型/周期型计划：根据 nextDueDate 提醒
+                if (p.kind === 'check' || p.kind === 'frequency') {
+                    (p.entries || []).forEach(e => {
+                        let due = false;
+                        if (e.freqDays && e.lastCheckinDate) {
+                            const next = addDays(e.lastCheckinDate, e.freqDays);
+                            if (next <= today) due = true;
+                        } else {
+                            // 每日打卡型，检查今天有没有打卡
+                            const hasLogToday = state.logs.some(l => l.planId === p.id && l.entryId === e.id && l.date === today);
+                            if (!hasLogToday) due = true;
+                        }
+                        if (due) {
+                            dueItems.push({ planId: p.id, planName: p.name, text: `${p.name} · ${e.name} 到了打卡时间`, entryId: e.id });
+                        }
+                    });
+                }
+            });
+
+            const html = dueItems.length
+                ? dueItems.map(item => `
+                            <div class="reminder-item">
+                                <span class="r-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg></span>
+                                <span class="r-text">${esc(item.text)}</span>
+                                <button class="r-action" data-goto-plan="${item.planId}" data-goto-entry="${item.entryId}">去打卡 →</button>
+                            </div>`).join('')
+                : '<div style="font-size:13px;color:#9CA3AF;padding:6px 0;">暂无待办提醒，一切正常 🎉</div>';
+
+            return `<div class="reminder-box">
+                        <div class="reminder-title">
+                            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#EF4444" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+                            待打卡提醒
+                        </div>
+                        <div class="reminder-list">${html}</div>
+                    </div>`;
+        }
+
+        /* ===== 计划卡片渲染 ===== */
+        function planCardHTML(p, idx = 0, isDetail = false) {
+            const today = todayStr();
+            const logs = state.logs.filter(l => l.planId === p.id);
+            const todayLogs = logs.filter(l => l.date === today);
+            const entries = p.entries || [];
+            const doneCount = entries.filter(e => todayLogs.some(l => l.entryId === e.id)).length;
+            const isNum = p.kind === 'number';
+            const icon = p.icon || (isNum ? 'heart' : 'flag');
+            const color = p.color || '#4F6BFF';
+
+            const rows = entries.map(e => {
+                const log = todayLogs.find(l => l.entryId === e.id);
+                const done = !!log;
+                let mid = '';
+                if (isNum) {
+                    if (done) {
+                        mid = `<span class="entry-value">${esc(String(log.value))}${p.unit ? ' ' + esc(p.unit) : ''}</span>`;
+                    } else {
+                        const prev = logs.filter(l => l.entryId === e.id).sort((a, b) => a.date.localeCompare(b.date)).pop();
+                        mid = `<input class="entry-val" type="number" step="any" inputmode="decimal"
+                                    placeholder="${prev ? esc(String(prev.value)) : '数值'}"
+                                    data-plan="${p.id}" data-entry-val="${e.id}">`;
+                    }
+                } else if (p.kind === 'frequency' || e.freqDays) {
+                    // 周期型：显示上次打卡日期 + 距下次还有多久
+                    const freq = Number(e.freqDays) || 1;
+                    const lastText = e.lastCheckinDate ? e.lastCheckinDate.slice(5) : '无';
+                    let nextText = '首次待打卡';
+                    let diff = null;
+                    if (e.lastCheckinDate) {
+                        const nextDate = addDays(e.lastCheckinDate, freq);
+                        diff = daysBetween(today, nextDate);
+                        if (diff > 0) nextText = `还有 ${diff} 天`;
+                        else if (diff === 0) nextText = '今天要打卡';
+                        else nextText = `已逾期 ${-diff} 天`;
+                    }
+                    let pill = 'background:#F3EEFF;color:#8B5CF6;';
+                    if (diff !== null && diff < 0) pill = 'background:#FEF2F2;color:#B91C1C;';
+                    else if (diff === 0) pill = 'background:#FEF3C7;color:#92400E;';
+                    mid = `<span class="entry-value" style="${pill}"
+                                  title="上次打卡：${esc(e.lastCheckinDate || '暂无')} · 周期：每 ${freq} 天">上次: ${esc(lastText)} · ${esc(nextText)}</span>`;
+                }
+
+                let checkBtn = '';
+                if (isNum) {
+                    checkBtn = `<button class="entry-check ${done ? 'done' : ''}" data-act="check" data-plan="${p.id}" data-entry="${e.id}">${done ? '✓ 已记录' : '记录'}</button>`;
+                } else {
+                    checkBtn = `<button class="entry-check ${done ? 'done' : ''}" data-act="check" data-plan="${p.id}" data-entry="${e.id}">${done ? '✓ 已打卡' : '打卡'}</button>`;
+                }
+
+                return `<div class="entry-row">
+                            <span class="entry-name" data-act="entry-history" data-plan="${p.id}" data-entry="${e.id}" title="查看记录">${esc(e.name)}</span>
+                            ${mid}
+                            ${checkBtn}
+                            <button class="entry-cancel" data-act="uncheck" data-plan="${p.id}" data-entry="${e.id}" ${done ? '' : 'disabled'} title="取消打卡">✕</button>
+                        </div>`;
+            }).join('') || `<div style="font-size:12.5px;color:#9CA3AF;padding:12px;text-align:center">还没有${isNum ? '成员' : '任务'}，点右上角 ✎ 添加</div>`;
+
+            let strip = '';
+            const base = new Date();
+            for (let i = 13; i >= 0; i--) {
+                const d = new Date(base); d.setDate(d.getDate() - i);
+                const s = dateStr(d);
+                const on = logs.some(l => l.date === s);
+                strip += `<i class="${on ? 'on' : ''}" title="${s}"></i>`;
+            }
+
+            const createdStr = p.createdAt ? fmtDate(p.createdAt) : '';
+            const sub = `${entries.length} 位${isNum ? '成员' : '任务'} · 今日 ${doneCount}/${entries.length}${createdStr ? ` · 创建于 ${createdStr.slice(5)}` : ''}`;
+
+            return `<div class="plan-card" style="--plan-color:${color};animation-delay:${Math.min(idx * 40, 400)}ms">
+                        <div class="plan-head">
+                            <div class="plan-icon" style="color:${color};background:${color}1a">${ICON_LIB[icon] || ICON_LIB.star}</div>
+                            <div class="plan-titles">
+                                <div class="plan-name">${esc(p.name)}</div>
+                                <div class="plan-sub">${sub}</div>
+                            </div>
+                            ${isDetail ? '' : `<button class="plan-edit" data-act="plan-edit" data-plan="${p.id}" title="编辑计划">✎</button>`}
+                        </div>
+                        <div class="plan-entries">${rows}</div>
+                        ${isDetail ? '' : `<div class="plan-strip">${strip}</div>`}
+                    </div>`;
+        }
+
+        /* ===== 打卡 / 取消打卡 ===== */
+        async function doCheckIn(planId, entryId) {
+            const p = state.plans.find(x => x.id === planId); if (!p) return;
+            const entry = (p.entries || []).find(x => x.id === entryId); if (!entry) return;
+            const today = todayStr();
+            if (state.logs.some(l => l.planId === planId && l.entryId === entryId && l.date === today)) { toast('今天已经打过卡了'); return; }
+
+            let value = 1;
+            if (p.kind === 'number') {
+                const input = document.querySelector(`.entry-val[data-plan="${planId}"][data-entry-val="${entryId}"]`);
+                let v = input ? parseFloat(input.value) : NaN;
+                if (isNaN(v)) {
+                    const prev = state.logs.filter(l => l.planId === planId && l.entryId === entryId).sort((a, b) => a.date.localeCompare(b.date)).pop();
+                    if (prev) v = Number(prev.value);
+                }
+                if (isNaN(v)) { toast('请先填写数值', true); if (input) input.focus(); return; }
+                value = v;
+            }
+            await idbPut('logs', { id: uid(), planId, entryId, date: today, value });
+
+            // 如果是周期型任务，更新下一次打卡日期
+            if (entry.freqDays) {
+                entry.lastCheckinDate = today;
+                p.updatedAt = Date.now();
+                await idbPut('plans', p);
+            }
+
+            await loadAll();   // loadAll 会自动写盘
+            renderContent(false);
+            toast('打卡成功 ✓');
+        }
+
+        async function doUncheck(planId, entryId) {
+            const today = todayStr();
+            const logs = state.logs.filter(l => l.planId === planId && l.entryId === entryId && l.date === today);
+            if (!logs.length) { toast('今天还没有打卡'); return; }
+            for (const l of logs) await idbDel('logs', l.id);
+
+            // 如果是周期型任务，回退 lastCheckinDate
+            const p = state.plans.find(x => x.id === planId);
+            if (p) {
+                const entry = (p.entries || []).find(e => e.id === entryId);
+                if (entry && entry.freqDays) {
+                    const prevLogs = state.logs.filter(l => l.planId === planId && l.entryId === entryId && l.date < today).sort((a, b) => b.date.localeCompare(a.date));
+                    entry.lastCheckinDate = prevLogs.length ? prevLogs[0].date : null;
+                    p.updatedAt = Date.now();
+                    await idbPut('plans', p);
+                }
+            }
+
+            await loadAll();   // loadAll 会自动写盘
+            renderContent(false);
+            toast('已取消打卡');
+        }
+
+        /* ===== 单条目历史记录 ===== */
+        function openEntryHistory(planId, entryId) {
+            const p = state.plans.find(x => x.id === planId); if (!p) return;
+            const entry = (p.entries || []).find(e => e.id === entryId); if (!entry) return;
+            const logs = state.logs.filter(l => l.planId === planId && l.entryId === entryId).sort((a, b) => a.date.localeCompare(b.date));
+            const isNum = p.kind === 'number';
+
+            let body = '';
+            if (isNum) {
+                body = `<div style="background:rgba(255,255,255,0.6);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:16px"><canvas id="chart" style="width:100%;height:180px;display:block"></canvas></div>`;
+            } else {
+                const dates = new Set(logs.map(l => l.date));
+                let heat = '';
+                for (let i = 89; i >= 0; i--) {
+                    const d = new Date(); d.setDate(d.getDate() - i);
+                    const s = dateStr(d);
+                    heat += `<div title="${s}" style="width:14px;height:14px;border-radius:4px;background:${dates.has(s) ? 'var(--ok)' : '#E5E7EB'}"></div>`;
+                }
+                body = `<div style="background:rgba(255,255,255,0.6);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:16px">
+                            <div style="font-size:12px;color:var(--dim);margin-bottom:10px">最近 90 天打卡</div>
+                            <div style="display:grid;grid-template-columns:repeat(15,1fr);gap:4px">${heat}</div></div>`;
+            }
+
+            const list = [...logs].reverse().slice(0, 120).map(l => `
+                        <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px solid rgba(0,0,0,0.05);font-size:13px">
+                          <span style="color:var(--dim);font-size:12px;min-width:82px">${l.date}</span>
+                          <span style="flex:1">${isNum ? esc(String(l.value)) + (p.unit ? ' ' + esc(p.unit) : '') : '✔ 已打卡'}</span>
+                          <button data-logdel="${l.id}" style="border:0;background:transparent;color:#9CA3AF;cursor:pointer;font-size:12px">删除</button>
+                        </div>`).join('') || '<div style="color:#9CA3AF;font-size:12.5px;padding:10px">还没有记录</div>';
+
+            openModal(`<h3>${esc(entry.name)} · 记录</h3>${body}
+                        <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;background:rgba(255,255,255,0.4)">${list}</div>
+                        <div class="modal-actions"><span class="sp"></span><button class="btn ghost" id="eh-close">关闭</button></div>`, true);
+
+            if (isNum) drawChart($('#chart'), logs);
+            $('#eh-close').onclick = closeModal;
+            $$('[data-logdel]').forEach(b => {
+                b.onclick = async () => {
+                    await idbDel('logs', b.dataset.logdel);
+                    await loadAll();
+                    openEntryHistory(planId, entryId);
+                    renderContent(false);
+                };
+            });
+        }
+
+        /* =====================================================
+           模态框
+        ===================================================== */
+        function openModal(html, wide) {
+            const root = $('#modalRoot');
+            root.innerHTML = `<div class="modal-mask"><div class="modal ${wide ? 'wide' : ''}">${html}</div></div>`;
+            root.style.display = 'block';
+            root.querySelector('.modal-mask').addEventListener('mousedown', e => { if (e.target.classList.contains('modal-mask')) closeModal(); });
+        }
+        function closeModal() { const root = $('#modalRoot'); root.style.display = 'none'; root.innerHTML = ''; }
+
+        /* =====================================================
+           类别管理（收藏）
+        ===================================================== */
+        function openNewFolderDialog() {
+            if (state.view === 'plan') { toast('计划分类下不能创建类别'); return; }
+            if (state.view === 'all') { toast('请先在左侧选择一个分类，再新建类别'); return; }
+            const info = getTypeInfo(state.view);
+            openModal(`<h3>新建类别</h3>
+                <div style="font-size:12px;color:var(--dim);margin-bottom:14px">将在「${esc(info.name)}」${state.folderPath.length ? ' › ' + state.folderPath.map(f => esc(f.title)).join(' › ') : ''} 下创建</div>
+                <label>类别名称<input type="text" id="fd-name" placeholder="比如：风景 / 2024 / 收藏夹" autofocus></label>
+                <div class="modal-actions"><span class="sp"></span><button class="btn ghost" id="fd-cancel">取消</button><button class="btn" id="fd-save">创建</button></div>`);
+            $('#fd-cancel').onclick = closeModal;
+            $('#fd-save').onclick = async () => {
+                const title = $('#fd-name').value.trim();
+                if (!title) { toast('请填写名称', true); return; }
+                const item = { id: uid(), type: state.view, isFolder: true, title, parentId: state.currentFolderId, createdAt: Date.now(), updatedAt: Date.now() };
+                await idbPut('items', item);
+                await loadAll(); closeModal(); renderNav(); renderContent();
+                toast('类别已创建');
+            };
+            setTimeout(() => { const inp = $('#fd-name'); if (inp) inp.focus(); }, 50);
+        }
+
+        /* =====================================================
+           编辑器（收藏条目）
+        ===================================================== */
+        function openItemEditor(type, item) {
+            const isNew = !item;
+            const it = item || { type, title: '', note: '' };
+            const info = getTypeInfo(type);
+            let fields = '';
+
+            if (it.isFolder) {
+                openModal(`<h3>编辑类别</h3>
+                  <label>类别名称<input type="text" id="f-title" value="${esc(it.title || '')}"></label>
+                  <div class="modal-actions"><button class="btn danger" id="f-del">删除</button><span class="sp"></span><button class="btn ghost" id="f-cancel">取消</button><button class="btn" id="f-save">保存</button></div>`);
+                $('#f-cancel').onclick = closeModal;
+                $('#f-save').onclick = async () => {
+                    const t = $('#f-title').value.trim();
+                    if (!t) { toast('请填写名称', true); return; }
+                    it.title = t; it.updatedAt = Date.now();
+                    await idbPut('items', it); await loadAll(); closeModal(); renderContent(); toast('已保存');
+                };
+                $('#f-del').onclick = async () => {
+                    const subItems = state.items.filter(x => x.parentId === it.id);
+                    let msg = `确定删除类别「${it.title}」吗？`;
+                    if (subItems.length) msg += `\n\n该类别下有 ${subItems.length} 项内容，会一并删除。`;
+                    if (!confirm(msg)) return;
+                    async function delRecursive(id) {
+                        const children = state.items.filter(x => x.parentId === id);
+                        for (const ch of children) { if (ch.isFolder) await delRecursive(ch.id); revokeURL(ch.id); await idbDel('items', ch.id); }
+                    }
+                    await delRecursive(it.id);
+                    await idbDel('items', it.id);
+                    await loadAll(); closeModal(); renderNav(); renderContent(); toast('已删除');
+                };
+                return;
+            }
+
+            if (type === 'image') {
+                fields = `<label>标题<input type="text" id="f-title" value="${esc(it.title || '')}" placeholder="给这张图起个名字"></label>
+                  <label>来源 / 原文件路径<input type="text" id="f-source" value="${esc(it.source || '')}" placeholder="可选"></label>
+                  <label>备注<textarea id="f-note" placeholder="可选">${esc(it.note || '')}</textarea></label>
+                  <label>更换图片</label><button class="btn ghost" id="f-cover" style="width:100%;margin-bottom:12px">选择新图片</button>`;
+            } else if (type === 'site') {
+                fields = `<label>标题<input type="text" id="f-title" value="${esc(it.title || '')}" placeholder="留空则用域名"></label>
+                  <label>网址<input type="text" id="f-url" value="${esc(it.url || '')}" placeholder="https://..."></label>
+                  <label>备注<textarea id="f-note" placeholder="可选">${esc(it.note || '')}</textarea></label>`;
+            } else if (type === 'anime') {
+                fields = `<label>名称<input type="text" id="f-title" value="${esc(it.title || '')}"></label>
+                  <div class="row">
+                    <label>状态<select id="f-status">${ANIME_STATUS.map(s => `<option ${it.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
+                    <label>看到第几集<input type="number" id="f-cur" min="0" value="${it.currentEp || 0}"></label>
+                    <label>总集数<input type="number" id="f-total" min="0" value="${it.totalEp || 0}"></label>
+                  </div>
+                  <label>备注<textarea id="f-note" placeholder="可选">${esc(it.note || '')}</textarea></label>
+                  <label>封面</label><button class="btn ghost" id="f-cover" style="width:100%;margin-bottom:12px">选择/更换封面图片</button>`;
+            } else {
+                fields = `<label>标题<input type="text" id="f-title" value="${esc(it.title || '')}" placeholder="给这条内容起个名字"></label>
+                  <label>网址（可选，填了点击卡片就能跳转）<input type="text" id="f-url" value="${esc(it.url || '')}" placeholder="https://..."></label>
+                  <label>备注<textarea id="f-note" placeholder="可选">${esc(it.note || '')}</textarea></label>
+                  <label>封面（可选）</label><button class="btn ghost" id="f-cover" style="width:100%;margin-bottom:12px">选择/更换封面图片</button>`;
+            }
+
+            openModal(`<h3>${isNew ? '添加' : '编辑'}${esc(info.name)}</h3>${fields}<div class="modal-actions">${isNew ? '' : '<button class="btn danger" id="f-del">删除</button>'}<span class="sp"></span><button class="btn ghost" id="f-cancel">取消</button><button class="btn" id="f-save">保存</button></div>`);
+
+            let pendingBlob = null;
+            const coverBtn = $('#f-cover');
+            if (coverBtn) {
+                coverBtn.onclick = () => {
+                    const inp = document.createElement('input'); inp.type = 'file';
+                    inp.accept = type === 'image' ? 'image/*,video/*' : 'image/*';
+                    inp.onchange = async () => {
+                        const f = inp.files[0]; if (!f) return;
+                        try {
+                            let thumb = f.type.startsWith('video/') ? await grabVideoFrame(f) : await compressImage(f);
+                            pendingBlob = thumb.blob;
+                            if (!isNew) {
+                                it.blob = thumb.blob;
+                                if (type === 'image' && f.type.startsWith('video/')) it.isVideo = true;
+                                else if (type === 'image') it.isVideo = false;
+                                await idbPut('items', it);
+                                await loadAll(); revokeURL(it.id); renderContent(false);
+                                toast('图片已更新');
+                            } else toast('已选择，记得保存');
+                        } catch (e) { toast('处理失败', true); }
+                    };
+                    inp.click();
+                };
+            }
+
+            $('#f-cancel').onclick = closeModal;
+            $('#f-save').onclick = async () => {
+                const title = ($('#f-title')?.value || '').trim();
+                const note = ($('#f-note')?.value || '').trim();
+                const obj = { ...it, type, note, updatedAt: Date.now() };
+                if (!obj.createdAt) obj.createdAt = Date.now();
+                if (!obj.id) obj.id = uid();
+                if (pendingBlob) obj.blob = pendingBlob;
+                if (!obj.parentId && state.currentFolderId) obj.parentId = state.currentFolderId;
+                else if (obj.parentId === undefined) obj.parentId = null;
+
+                if (type === 'image') { obj.title = title || '未命名'; obj.source = ($('#f-source')?.value || '').trim(); }
+                else if (type === 'site') {
+                    const url = ($('#f-url')?.value || '').trim();
+                    if (!url) { toast('请填写网址', true); return; }
+                    obj.url = /^https?:\/\//i.test(url) ? url : 'https://' + url;
+                    if (!title) { try { obj.title = new URL(obj.url).hostname.replace(/^www\./, ''); } catch (e) { obj.title = obj.url; } } else obj.title = title;
+                }
+                else if (type === 'anime') {
+                    if (!title) { toast('请填写名称', true); return; }
+                    obj.title = title;
+                    obj.status = $('#f-status').value;
+                    obj.currentEp = Number($('#f-cur').value) || 0;
+                    obj.totalEp = Number($('#f-total').value) || 0;
+                }
+                else {
+                    if (!title) { toast('请填写标题', true); return; }
+                    obj.title = title;
+                    const url = ($('#f-url')?.value || '').trim();
+                    if (url) obj.url = /^https?:\/\//i.test(url) ? url : 'https://' + url;
+                }
+
+                await idbPut('items', obj);
+                await loadAll(); closeModal(); renderNav(); renderContent(); toast('已保存');
+            };
+
+            if (!isNew) {
+                $('#f-del').onclick = async () => {
+                    if (!confirm('确定删除这条收藏吗？')) return;
+                    revokeURL(it.id); await idbDel('items', it.id);
+                    await loadAll(); closeModal(); renderNav(); renderContent(); toast('已删除');
+                };
+            }
+        }
+
+        /* =====================================================
+           计划编辑器（新建 / 编辑计划）
+        ===================================================== */
+        function openPlanEditor(plan) {
+            const isNew = !plan;
+            const base = plan || { name: '', icon: 'flag', color: '#4F6BFF', kind: 'check', unit: '', entries: [] };
+            let draft = (base.entries || []).map(e => ({
+                id: e.id || uid(), name: e.name || '',
+                freqDays: e.freqDays || '', lastCheckinDate: e.lastCheckinDate || null,
+            }));
+            if (!draft.length) draft.push({ id: uid(), name: '', freqDays: '', lastCheckinDate: null });
+            let pickedIcon = base.icon || 'flag';
+            let pickedColor = base.color || '#4F6BFF';
+            let kind = base.kind || 'check';
+            const iconKeys = Object.keys(ICON_LIB);
+
+            function syncDraft() {
+                const n = $('#p-name'); if (n) base.name = n.value;
+                const u = $('#p-unit'); if (u) base.unit = u.value;
+                $$('[data-entry-name]').forEach(inp => {
+                    const i = Number(inp.dataset.entryName);
+                    if (draft[i]) draft[i].name = inp.value;
+                });
+                $$('[data-entry-freq]').forEach(inp => {
+                    const i = Number(inp.dataset.entryFreq);
+                    if (draft[i]) draft[i].freqDays = inp.value === '' ? '' : Number(inp.value);
+                });
+            }
+
+            function entriesHTML() {
+                const ph = kind === 'number' ? '成员名字，比如 我 / 家人 / 老婆' : '任务名，比如 每天喂鱼 / 定期换水';
+                return draft.map((en, i) => `
+                            <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+                              <input type="text" data-entry-name="${i}" value="${esc(en.name)}" placeholder="${ph}"
+                                style="flex:1;min-width:140px;padding:10px 14px;border-radius:10px;border:1px solid var(--border);background:#F9FAFB;color:var(--text);font-size:14px;font-family:inherit;outline:none">
+                              ${kind === 'frequency' ? (() => {
+                        const presets = [1, 2, 3, 5, 7, 14, 30, 90, 180];
+                        const cur = Number(en.freqDays) || 1;
+                        const opts = presets.includes(cur) ? presets : [...presets, cur].sort((a, b) => a - b);
+                        const label = v => ({ 1: '每天', 2: '每2天', 3: '每3天', 5: '每5天', 7: '每周', 14: '每两周', 30: '每月', 90: '每季度', 180: '每半年' }[v] || `每${v}天`);
+                        return `<select data-entry-freq="${i}"
+                                  style="width:118px;padding:10px 10px;border-radius:10px;border:1px solid var(--border);background:#F9FAFB;color:var(--text);font-size:13.5px;font-family:inherit;outline:none;cursor:pointer">
+                                  ${opts.map(v => `<option value="${v}" ${cur === v ? 'selected' : ''}>${label(v)}</option>`).join('')}
+                                </select>`;
+                    })() : ''}
+                              <button class="btn danger" data-entry-del="${i}" style="padding:10px 14px;border-radius:10px">删除</button>
+                            </div>`).join('');
+            }
+
+            function bindEditor() {
+                $$('#iconPicker .icon-opt, #iconPickerMore .icon-opt').forEach(el => {
+                    el.onclick = () => {
+                        pickedIcon = el.dataset.icon;
+                        $$('#iconPicker .icon-opt, #iconPickerMore .icon-opt').forEach(x => x.classList.toggle('selected', x.dataset.icon === el.dataset.icon));
+                    };
+                });
+                const moreBtnP = $('#iconMoreBtn');
+                if (moreBtnP) moreBtnP.onclick = () => {
+                    const m = $('#iconPickerMore');
+                    const showing = m.style.display !== 'none';
+                    m.style.display = showing ? 'none' : 'grid';
+                    moreBtnP.textContent = showing ? '＋ 更多图标' : '− 收起更多';
+                };
+                $$('#colorPicker .color-opt').forEach(el => {
+                    el.onclick = () => { pickedColor = el.dataset.color; $$('#colorPicker .color-opt').forEach(x => x.classList.toggle('selected', x === el)); };
+                });
+                $('#p-kind').onchange = ev => { syncDraft(); kind = ev.target.value; renderEditor(); };
+                $('#p-add-entry').onclick = () => { syncDraft(); draft.push({ id: uid(), name: '', freqDays: '', lastCheckinDate: null }); renderEditor(); };
+                $$('[data-entry-del]').forEach(b => {
+                    b.onclick = () => {
+                        syncDraft();
+                        draft.splice(Number(b.dataset.entryDel), 1);
+                        if (!draft.length) draft.push({ id: uid(), name: '', freqDays: '', lastCheckinDate: null });
+                        renderEditor();
+                    };
+                });
+                $('#p-cancel').onclick = closeModal;
+                $('#p-save').onclick = async () => {
+                    syncDraft();
+                    const name = ($('#p-name').value || '').trim();
+                    if (!name) { toast('请填写计划名称', true); return; }
+                    const k = $('#p-kind').value;
+                    const unit = $('#p-unit') ? $('#p-unit').value.trim() : '';
+                    const entries = draft.map(en => ({
+                        id: en.id, name: (en.name || '').trim(),
+                        freqDays: k === 'frequency' ? (Number(en.freqDays) || 1) : null,
+                        lastCheckinDate: en.lastCheckinDate || null,
+                    })).filter(en => en.name);
+                    if (!entries.length) { toast('请至少添加一个' + (k === 'number' ? '成员' : '任务'), true); return; }
+                    const obj = {
+                        id: base.id || uid(),
+                        name, icon: pickedIcon, color: pickedColor, kind: k, unit, entries,
+                        createdAt: base.createdAt || Date.now(),
+                        updatedAt: Date.now(),
+                    };
+                    await idbPut('plans', obj);
+                    const valid = new Set(entries.map(en => en.id));
+                    for (const l of state.logs.filter(l => l.planId === obj.id && !valid.has(l.entryId))) await idbDel('logs', l.id);
+                    await loadAll();
+                    closeModal();
+                    renderNav(); renderContent(false);
+                    toast('已保存');
+                };
+                if (!isNew) {
+                    $('#p-del').onclick = async () => {
+                        if (!confirm('删除这个计划？所有打卡记录也会一起删除。')) return;
+                        for (const l of state.logs.filter(l => l.planId === base.id)) await idbDel('logs', l.id);
+                        await idbDel('plans', base.id);
+                        await loadAll(); closeModal(); renderNav(); renderContent(false);
+                        toast('已删除');
+                    };
+                }
+            }
+
+            function renderEditor() {
+                openModal(`<h3>${isNew ? '新建计划' : '编辑计划'}</h3>
+                          <label>计划名称<input type="text" id="p-name" value="${esc(base.name || '')}" placeholder="比如：减肥计划 / 喂鱼计划"></label>
+                                               <label>类型
+                            <select id="p-kind">
+                              <option value="check" ${kind === 'check' ? 'selected' : ''}>打卡型（每天打勾）</option>
+                              <option value="number" ${kind === 'number' ? 'selected' : ''}>数值型（记录数字，如体重）</option>
+                              <option value="frequency" ${kind === 'frequency' ? 'selected' : ''}>周期型（按天间隔提醒）</option>
+                              <option value="record" ${kind === 'record' ? 'selected' : ''}>记录型（仅记录打卡，不提醒、不标红）</option>
+                            </select>
+                          </label>
+                          <label id="p-unit-label" style="display:${kind === 'number' ? 'block' : 'none'}">单位<input type="text" id="p-unit" value="${esc(base.unit || '')}" placeholder="kg / 公里 / 分钟"></label>
+                                                <div style="display:block;font-size:13px;color:var(--dim);margin-bottom:14px;font-weight:500">图标
+                            <div class="icon-picker" id="iconPicker">${ICON_COMMON.map(k => `<div class="icon-opt ${pickedIcon === k ? 'selected' : ''}" data-icon="${k}">${ICON_LIB[k]}</div>`).join('')}</div>
+                            <button type="button" class="btn ghost" id="iconMoreBtn" style="width:100%;margin-top:8px;font-size:12.5px;padding:8px">＋ 更多图标</button>
+                            <div class="icon-picker" id="iconPickerMore" style="display:none;max-height:240px;overflow-y:auto;margin-top:8px">${iconKeys.map(k => `<div class="icon-opt ${pickedIcon === k ? 'selected' : ''}" data-icon="${k}">${ICON_LIB[k]}</div>`).join('')}</div>
+                          </div>
+                          <div style="display:block;font-size:13px;color:var(--dim);margin-bottom:14px;font-weight:500">选择颜色 ... / 颜色 ... </div>
+                          <label>${kind === 'number' ? '成员（支持多人，各自记录体重）' : kind === 'frequency' ? '任务（可设置每多少天一次）' : '打卡任务'}</label>
+                          <div id="entryList">${entriesHTML()}</div>
+                          <button class="btn ghost" id="p-add-entry" style="width:100%">＋ 添加${kind === 'number' ? '成员' : kind === 'frequency' ? '周期任务' : '任务'}</button>
+                          <div class="modal-actions">
+                            ${isNew ? '' : '<button class="btn danger" id="p-del">删除计划</button>'}
+                            <span class="sp"></span>
+                            <button class="btn ghost" id="p-cancel">取消</button>
+                            <button class="btn" id="p-save">保存</button>
+                          </div>`, true);
+                bindEditor();
+            }
+
+            renderEditor();
+        }
+
+        /* =====================================================
+           图表绘制
+        ===================================================== */
+        function drawChart(canvas, logs) {
+            if (!canvas) return;
+            const dpr = window.devicePixelRatio || 1; const w = canvas.clientWidth || 500; const h = canvas.clientHeight || 180;
+            canvas.width = w * dpr; canvas.height = h * dpr; const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+            const byDate = new Map(); logs.forEach(l => byDate.set(l.date, Number(l.value))); const pts = [...byDate.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+            if (pts.length === 0) { ctx.fillStyle = '#9CA3AF'; ctx.font = '13px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('还没有数据', w / 2, h / 2); return; }
+            const vals = pts.map(p => p[1]); let min = Math.min(...vals), max = Math.max(...vals); if (min === max) { min -= 1; max += 1; }
+            const padL = 48, padR = 12, padT = 14, padB = 24; const cw = w - padL - padR, ch = h - padT - padB;
+            const xs = i => padL + (pts.length === 1 ? cw / 2 : cw * i / (pts.length - 1)); const ys = v => padT + ch - ch * ((v - min) / (max - min));
+            ctx.strokeStyle = '#E5E7EB'; ctx.lineWidth = 1; ctx.fillStyle = '#9CA3AF'; ctx.font = '10.5px sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+            for (let i = 0; i <= 4; i++) { const v = min + (max - min) * i / 4; const y = ys(v); ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke(); ctx.fillText(v.toFixed(1), padL - 8, y); }
+            const grad = ctx.createLinearGradient(0, padT, 0, padT + ch); grad.addColorStop(0, 'rgba(139,92,246,.25)'); grad.addColorStop(1, 'rgba(139,92,246,0)');
+            ctx.beginPath(); pts.forEach((p, i) => { i ? ctx.lineTo(xs(i), ys(p[1])) : ctx.moveTo(xs(i), ys(p[1])); }); ctx.lineTo(xs(pts.length - 1), padT + ch); ctx.lineTo(xs(0), padT + ch); ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
+            ctx.beginPath(); pts.forEach((p, i) => { i ? ctx.lineTo(xs(i), ys(p[1])) : ctx.moveTo(xs(i), ys(p[1])); }); ctx.strokeStyle = '#8B5CF6'; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.stroke();
+            pts.forEach((p, i) => { ctx.beginPath(); ctx.arc(xs(i), ys(p[1]), 3, 0, Math.PI * 2); ctx.fillStyle = '#8B5CF6'; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke(); });
+            ctx.fillStyle = '#9CA3AF'; ctx.textBaseline = 'top'; ctx.textAlign = 'left'; ctx.fillText(pts[0][0].slice(5), padL, h - 16);
+            if (pts.length > 1) { ctx.textAlign = 'right'; ctx.fillText(pts[pts.length - 1][0].slice(5), w - padR, h - 16); }
+        }
+
+        /* =====================================================
+           导出 / 导入
+        ===================================================== */
+        async function exportAll() {
+            const items = await idbGetAll('items'); const plans = await idbGetAll('plans'); const logs = await idbGetAll('logs');
+            const bgSetting = await idbGet('settings', 'bgImage');
+            const typesSetting = await idbGet('settings', 'customTypes');
+            const orderSetting = await idbGet('settings', 'categoryOrder');
+            const metaSetting = await idbGet('settings', 'categoryMeta');
+            showProgress('正在打包数据…', 0);
+            const out = {
+                app: 'myVault', version: 7, exportedAt: new Date().toISOString(), items: [], plans, logs,
+                bgImage: bgSetting ? bgSetting.value : null,
+                customTypes: typesSetting ? typesSetting.value : [],
+                categoryOrder: orderSetting ? orderSetting.value : null,
+                categoryMeta: metaSetting ? metaSetting.value : null,
+            };
+            for (let i = 0; i < items.length; i++) { const it = { ...items[i] }; if (it.blob instanceof Blob) { it.blobData = await blobToDataURL(it.blob); delete it.blob; } out.items.push(it); if (i % 5 === 0) { setProgress(i / items.length); await new Promise(r => setTimeout(r, 0)); } }
+            setProgress(1); const json = JSON.stringify(out); const d = new Date();
+            const name = `收藏库备份_${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}.json`;
+            download(new Blob([json], { type: 'application/json' }), name); hideProgress(); toast('备份已导出');
+        }
+        async function importAll(file, merge = true) {
+            const text = await file.text(); let data;
+            try { data = JSON.parse(text); } catch (e) { toast('文件格式不对', true); return; }
+            if (!data || !Array.isArray(data.items)) { toast('这不是有效的备份文件', true); return; }
+            if (!merge) { if (!confirm('将清空现有全部数据，用备份覆盖。确定吗？')) return; await idbClear('items'); await idbClear('plans'); await idbClear('logs'); await idbClear('settings'); }
+            showProgress('正在导入…', 0);
+            for (let i = 0; i < data.items.length; i++) { const it = { ...data.items[i] }; if (it.blobData) { try { it.blob = dataURLToBlob(it.blobData); } catch (e) { } delete it.blobData; } await idbPut('items', it); if (i % 5 === 0) { setProgress(i / Math.max(1, data.items.length)); await new Promise(r => setTimeout(r, 0)); } }
+            for (const p of (data.plans || [])) await idbPut('plans', p);
+            for (const l of (data.logs || [])) await idbPut('logs', l);
+            if (data.bgImage) { await idbPut('settings', { key: 'bgImage', value: data.bgImage }); }
+            if (data.customTypes) { await idbPut('settings', { key: 'customTypes', value: data.customTypes }); }
+            if (data.categoryOrder) { await idbPut('settings', { key: 'categoryOrder', value: data.categoryOrder }); }
+            if (data.categoryMeta) { await idbPut('settings', { key: 'categoryMeta', value: data.categoryMeta }); }
+            setProgress(1); state.urlCache.forEach(u => URL.revokeObjectURL(u)); state.urlCache.clear();
+            await loadAll(); await loadBgImage(); await loadCustomTypes(); await loadCategoryOrder(); await loadCategoryMeta();
+            hideProgress(); renderNav(); renderContent(); toast('导入完成');
+        }
+        function showProgress(text, pct) { $('#progText').textContent = text; $('#progBar').style.width = (pct * 100) + '%'; $('#progress').style.display = 'flex'; }
+        function setProgress(pct) { $('#progBar').style.width = (pct * 100) + '%'; }
+        function hideProgress() { $('#progress').style.display = 'none'; }
+
+        /* =====================================================
+           添加流程
+        ===================================================== */
+        function pickImageFiles(callback, multiple = true) {
+            const inp = document.createElement('input');
+            inp.type = 'file';
+            inp.accept = 'image/*,video/*';
+            if (multiple) inp.multiple = true;
+            inp.style.display = 'none';
+            inp.onchange = async () => {
+                const files = inp.files;
+                inp.remove();
+                if (files && files.length) await callback(files);
+            };
+            document.body.appendChild(inp);
+            inp.click();
+        }
+
+        function handleAdd() {
+            const v = state.view;
+            if (v === 'plan') { openPlanEditor(null); return; }
+            if (v === 'image') { pickImageFiles(files => addImages(files, 'image')); return; }
+            if (v === 'site') { openItemEditor('site', null); return; }
+            if (v === 'anime') { openItemEditor('anime', null); return; }
+            if (v === 'all') { openAddMenuGeneric(); return; }
+            if (v.startsWith('custom_')) { openAddMenuForCustom(v); return; }
+        }
+
+        function openAddMenuGeneric() {
+            const builtinItems = BUILTIN_TYPES.map(key => {
+                const meta = state.categoryMeta[key];
+                return `<button class="btn ghost" data-add="${key}" style="padding:20px 10px;font-size:14px;display:flex;flex-direction:column;gap:8px;height:auto">
+                  <span style="width:26px;height:26px;display:inline-flex;color:${meta.color}">${ICON_LIB[meta.icon] || ICON_LIB.star}</span>${esc(meta.name)}
+                </button>`;
+            }).join('');
+            const customItems = state.customTypes.map(t => `
+                <button class="btn ghost" data-add="${esc(t.id)}" style="padding:20px 10px;font-size:14px;display:flex;flex-direction:column;gap:8px;height:auto">
+                  <span style="width:26px;height:26px;display:inline-flex;color:${t.color}">${ICON_LIB[t.icon] || ICON_LIB.star}</span>${esc(t.name)}
+                </button>`).join('');
+
+            openModal(`<h3>添加内容</h3>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${builtinItems}${customItems}</div>
+                <div class="modal-actions"><span class="sp"></span><button class="btn ghost" id="a-cancel">取消</button></div>`);
+
+            $$('#modalRoot .btn.ghost span svg').forEach(svg => { svg.style.width = '26px'; svg.style.height = '26px'; svg.style.stroke = 'currentColor'; svg.style.fill = 'none'; svg.style.strokeWidth = '2'; });
+
+            $('#a-cancel').onclick = closeModal;
+            $$('[data-add]').forEach(b => {
+                b.onclick = () => {
+                    const t = b.dataset.add; closeModal();
+                    if (t === 'image') pickImageFiles(files => addImages(files, 'image'));
+                    else openItemEditor(t, null);
+                };
+            });
+        }
+
+        function openAddMenuForCustom(customId) {
+            const info = getTypeInfo(customId);
+            openModal(`<h3>在「${esc(info.name)}」下添加</h3>
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+                  <button class="btn ghost" data-kind="image" style="padding:18px 8px;font-size:13px;display:flex;flex-direction:column;gap:6px;height:auto">
+                    <span style="width:24px;height:24px;display:inline-flex;color:${info.color}">${ICON_LIB.image}</span>图片
+                  </button>
+                  <button class="btn ghost" data-kind="site" style="padding:18px 8px;font-size:13px;display:flex;flex-direction:column;gap:6px;height:auto">
+                    <span style="width:24px;height:24px;display:inline-flex;color:${info.color}">${ICON_LIB.globe}</span>网址
+                  </button>
+                  <button class="btn ghost" data-kind="anime" style="padding:18px 8px;font-size:13px;display:flex;flex-direction:column;gap:6px;height:auto">
+                    <span style="width:24px;height:24px;display:inline-flex;color:${info.color}">${ICON_LIB.tv}</span>动漫
+                  </button>
+                </div>
+                <div style="font-size:12px;color:var(--dim);margin-top:12px;line-height:1.6">选好后，条目会归属到「${esc(info.name)}」分类下${state.folderPath.length ? ' > ' + state.folderPath.map(f => esc(f.title)).join(' > ') : ''}。</div>
+                <div class="modal-actions"><span class="sp"></span><button class="btn ghost" id="ac-cancel">取消</button></div>`);
+
+            $$('#modalRoot .btn.ghost span svg').forEach(svg => { svg.style.width = '24px'; svg.style.height = '24px'; svg.style.stroke = 'currentColor'; svg.style.fill = 'none'; svg.style.strokeWidth = '2'; });
+
+            $('#ac-cancel').onclick = closeModal;
+            $$('[data-kind]').forEach(b => {
+                b.onclick = () => {
+                    const kind = b.dataset.kind; closeModal();
+                    if (kind === 'image') pickImageFiles(files => addImages(files, customId));
+                    else openItemEditor(customId, null);
+                };
+            });
+        }
+
+        async function addImages(files, typeForSave = 'image') {
+            const list = [...files]; if (!list.length) return;
+            showProgress(`处理中 0/${list.length}`, 0); let ok = 0, fail = 0;
+            for (let i = 0; i < list.length; i++) {
+                const f = list[i];
+                try {
+                    let thumb;
+                    if (f.type.startsWith('video/')) thumb = await grabVideoFrame(f);
+                    else if (f.type.startsWith('image/')) thumb = await compressImage(f);
+                    else { fail++; continue; }
+                    const item = {
+                        id: uid(), type: typeForSave, title: f.name.replace(/\.[^.]+$/, ''),
+                        blob: thumb.blob, w: thumb.w, h: thumb.h,
+                        isVideo: f.type.startsWith('video/'),
+                        note: '', source: '',
+                        parentId: state.currentFolderId || null,
+                        createdAt: Date.now(), updatedAt: Date.now(),
+                    };
+                    await idbPut('items', item); ok++;
+                } catch (e) { console.error(e); fail++; }
+                setProgress((i + 1) / list.length); $('#progText').textContent = `处理中 ${i + 1}/${list.length}`; await new Promise(r => setTimeout(r, 0));
+            }
+            await loadAll(); hideProgress(); renderNav(); renderContent();
+            toast(`完成：成功 ${ok} 个${fail ? '，失败 ' + fail + ' 个' : ''}`);
+        }
+
+        /* =====================================================
+           事件绑定
+        ===================================================== */
+        function bindUI() {
+            $('#nav').addEventListener('click', e => {
+                // 计划按钮优先判断（计划按钮只有 data-plan-id，没有 data-view）
+                const planBtn = e.target.closest('button[data-plan-id]');
+                if (planBtn) {
+                    state.view = 'plan';
+                    state.currentPlanId = planBtn.dataset.planId;
+                    state.currentFolderId = null;
+                    state.folderPath = [];
+                    state.expandedFolders.clear();
+                    renderNav(); renderContent(true);
+                    $('#content').scrollTop = 0;
+                    return;
+                }
+                const btn = e.target.closest('button[data-view]');
+                if (!btn) return;
+                const newView = btn.dataset.view;
+                if (state.view === newView && !state.currentFolderId) {
+                    if (newView === 'plan') { state.currentPlanId = null; renderNav(); renderContent(true); }
+                    return;
+                }
+                state.view = newView;
+                state.currentFolderId = null;
+                state.folderPath = [];
+                state.expandedFolders.clear();
+                if (newView !== 'plan') state.currentPlanId = null;
+                renderNav(); renderContent(true);
+                $('#content').scrollTop = 0;
+            });
+
+            let searchTimer;
+            $('#search').addEventListener('input', e => {
+                clearTimeout(searchTimer);
+                searchTimer = setTimeout(() => { state.search = e.target.value; renderContent(false); }, 160);
+            });
+
+            $('#btnAdd').onclick = handleAdd;
+            $('#btnNewFolder').onclick = openNewFolderDialog;
+
+            $('#content').addEventListener('click', e => {
+                /* ---------- 日历日期点击：展开当日详情 ---------- */
+                const calCell = e.target.closest('.cal-cell[data-date]');
+                if (calCell && !calCell.classList.contains('empty')) {
+                    const ds = calCell.dataset.date;
+                    selectedCalDate = (selectedCalDate === ds) ? null : ds;
+                    const sc = $('#content').scrollTop;
+                    renderContent(false);
+                    $('#content').scrollTop = sc;
+                    return;
+                }
+                /* ---------- 0. 计划卡片内部操作 ---------- */
+                const planEl = e.target.closest('.plan-card [data-act]');
+                if (planEl) {
+                    const act = planEl.dataset.act;
+                    const planId = planEl.dataset.plan;
+                    const entryId = planEl.dataset.entry;
+                    try {
+                        if (act === 'plan-edit') { e.stopPropagation(); const p = state.plans.find(x => x.id === planId); if (p) openPlanEditor(p); return; }
+                        if (act === 'check') { e.stopPropagation(); doCheckIn(planId, entryId); return; }
+                        if (act === 'uncheck') { e.stopPropagation(); doUncheck(planId, entryId); return; }
+                        if (act === 'entry-history') { e.stopPropagation(); openEntryHistory(planId, entryId); return; }
+                    } catch (err) { console.error('计划卡片操作出错:', err); toast('操作失败：' + (err.message || err), true); return; }
+                }
+
+                // 提醒区的跳转
+                const gotoBtn = e.target.closest('[data-goto-plan]');
+                if (gotoBtn) {
+                    e.stopPropagation();
+                    const planId = gotoBtn.dataset.gotoPlan;
+                    const p = state.plans.find(x => x.id === planId);
+                    if (p) { state.view = 'plan'; state.currentPlanId = planId; renderNav(); renderContent(true); }
+                    return;
+                }
+
+                // 1. 编辑按钮
+                const editBtn = e.target.closest('[data-act="edit"]');
+                if (editBtn) {
+                    e.stopPropagation();
+                    const it = state.items.find(x => x.id === editBtn.dataset.id);
+                    if (it) openItemEditor(it.type, it);
+                    return;
+                }
+
+                // 2. 进入类别
+                const enterBtn = e.target.closest('[data-act="enter-folder"]');
+                if (enterBtn) {
+                    e.stopPropagation();
+                    const it = state.items.find(x => x.id === enterBtn.dataset.id);
+                    if (it) {
+                        state.currentFolderId = it.id;
+                        state.folderPath.push({ id: it.id, title: it.title || '未命名类别' });
+                        state.expandedFolders.clear();
+                        renderContent(true);
+                        $('#content').scrollTop = 0;
+                    }
+                    return;
+                }
+
+                // 3. 大类别入口
+                const catEntry = e.target.closest('.cat-entry');
+                if (catEntry) {
+                    const cat = catEntry.dataset.cat;
+                    state.view = cat;
+                    state.currentFolderId = null;
+                    state.folderPath = [];
+                    state.expandedFolders.clear();
+                    renderNav(); renderContent(true);
+                    $('#content').scrollTop = 0;
+                    return;
+                }
+
+                // 4. 普通卡片
+                const card = e.target.closest('.card, .mini-card'); if (!card) return;
+                const id = card.dataset.id; const act = card.dataset.act;
+                const it = state.items.find(x => x.id === id); if (!it) return;
+
+                if (act === 'toggle-folder') {
+                    if (state.expandedFolders.has(id)) state.expandedFolders.delete(id);
+                    else state.expandedFolders.add(id);
+                    renderContent(false);
+                    return;
+                }
+                if (act === 'enter-folder') {
+                    state.currentFolderId = it.id;
+                    state.folderPath.push({ id: it.id, title: it.title || '未命名类别' });
+                    state.expandedFolders.clear();
+                    renderContent(true); $('#content').scrollTop = 0;
+                    return;
+                }
+                if (act === 'view') openLightbox(it);
+                else if (act === 'open') { if (it.url) window.open(it.url, '_blank'); else openItemEditor(it.type, it); }
+                else if (act === 'edit') openItemEditor(it.type, it);
+            });
+
+            /* 数值输入框回车即打卡 */
+            $('#content').addEventListener('keydown', e => {
+                if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('entry-val')) {
+                    e.preventDefault();
+                    doCheckIn(e.target.dataset.plan, e.target.dataset.entryVal);
+                }
+            });
+
+            $('#content').addEventListener('scroll', () => {
+                const el = $('#content');
+                if (el.scrollTop + el.clientHeight > el.scrollHeight - 420) {
+                    if (state.view !== 'plan' && state.view !== 'all' && state.shown < state.filtered.length) {
+                        state.shown = Math.min(state.shown + state.pageSize, state.filtered.length);
+                        appendCards();
+                    }
+                }
+            });
+
+            $('#btnManageTypes').onclick = openTypeManager;
+            $('#btnExport').onclick = exportAll;
+            $('#btnImport').onclick = () => $('#fileImport').click();
+            $('#fileImport').addEventListener('change', async e => {
+                const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+                const merge = confirm('点「确定」= 合并导入（保留现有数据）\n点「取消」= 覆盖导入（清空后导入）');
+                await importAll(f, merge);
+            });
+            $('#btnBg').onclick = async () => {
+                if (state.bgImage) {
+                    const act = confirm('检测到已有背景图。\n点「确定」= 移除当前背景\n点「取消」= 更换一张新背景');
+                    if (act) {
+                        removeBgImage();
+                        await idbDel('settings', 'bgImage');
+                        state.bgImage = null;
+                        if (state.persistEnabled) await saveToDisk();
+                        toast('背景已移除');
+                    }
+                    else $('#fileBg').click();
+                } else $('#fileBg').click();
+            };
+            $('#fileBg').addEventListener('change', async e => { const f = e.target.files[0]; e.target.value = ''; if (f) await handleBgUpload(f); });
+            $('#lightbox').addEventListener('click', () => { $('#lightbox').style.display = 'none'; $('#lightbox').innerHTML = ''; });
+            document.addEventListener('keydown', e => {
+                if (e.key === 'Escape') { if ($('#lightbox').style.display === 'flex') { $('#lightbox').style.display = 'none'; $('#lightbox').innerHTML = ''; } else if ($('#modalRoot').style.display === 'block') { closeModal(); } }
+                if (e.key === '/' && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') { e.preventDefault(); $('#search').focus(); }
+            });
+
+            // 日历翻页
+            document.addEventListener('click', e => {
+                if (e.target.id === 'calPrev') { currentCalMonth.setMonth(currentCalMonth.getMonth() - 1); renderContent(false); }
+                if (e.target.id === 'calNext') { currentCalMonth.setMonth(currentCalMonth.getMonth() + 1); renderContent(false); }
+            });
+        }
+        function openLightbox(it) { if (!it.blob) { openItemEditor(it.type, it); return; } const u = getURL(it); const lb = $('#lightbox'); lb.innerHTML = `<img src="${u}" alt="">`; lb.style.display = 'flex'; }
+
+        /* =====================================================
+           默认计划
+        ===================================================== */
+        async function ensureDefaultPlans() {
+            const s = await idbGet('settings', 'planDefaultsSeeded_v2');
+            if (s && s.value) return;
+            if (state.plans.length === 0) {
+                const now = Date.now();
+                // 减肥计划：数值型，含体重和运动
+                const weightPlanId = uid();
+                await idbPut('plans', {
+                    id: weightPlanId, name: '减肥计划', icon: 'heart', color: '#EF4444',
+                    kind: 'number', unit: 'kg',
+                    entries: [
+                        { id: uid(), name: '我（体重）' },
+                        { id: uid(), name: '家人（体重）' },
+                    ],
+                    createdAt: now, updatedAt: now,
+                });
+                // 喂鱼计划：周期型
+                const fishPlanId = uid();
+                await idbPut('plans', {
+                    id: fishPlanId, name: '喂鱼计划', icon: 'flag', color: '#06B6D4',
+                    kind: 'frequency', unit: '',
+                    entries: [
+                        { id: uid(), name: '每天喂鱼', freqDays: 1, lastCheckinDate: null },
+                        { id: uid(), name: '定期换水', freqDays: 7, lastCheckinDate: null },
+                        { id: uid(), name: '过滤器清理', freqDays: 14, lastCheckinDate: null },
+                    ],
+                    createdAt: now, updatedAt: now,
+                });
+                await loadAll();
+            }
+            await idbPut('settings', { key: 'planDefaultsSeeded_v2', value: true });
+        }
+
+        /* =====================================================
+           启动
+           v6：优先从磁盘恢复；从磁盘恢复时把数据镜像回 IndexedDB
+        ===================================================== */
+        (async function init() {
+            bindUI();
+            updateClock();
+            setInterval(updateClock, 1000);
+            try { await openDB(); } catch (e) { console.error('数据库打开失败:', e); toast('数据库打开失败：' + (e.message || e), true); return; }
+
+            console.log('[myVault] IS_TAURI =', IS_TAURI, '| origin =', location.origin);
+
+            // 1) 优先尝试从磁盘（Tauri AppData/vault-data.json）恢复
+            let diskData = null;
+            try { diskData = await loadFromDisk(); } catch (e) { console.error('loadFromDisk 异常:', e); }
+
+            if (diskData) {
+                // 用磁盘数据填充内存状态
+                state.items = deserializeItemsFromDisk(diskData.items);
+                state.items.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+                state.plans = diskData.plans || [];
+                state.logs = diskData.logs || [];
+                state.customTypes = Array.isArray(diskData.customTypes) ? diskData.customTypes : [];
+                state.categoryOrder = diskData.categoryOrder || null;
+                state.categoryMeta = diskData.categoryMeta ? { ...DEFAULT_CATEGORY_META, ...diskData.categoryMeta } : { ...DEFAULT_CATEGORY_META };
+                if (diskData.bgImage) state.bgImage = diskData.bgImage;
+
+                console.log('[myVault] 从磁盘恢复：', state.items.length, 'items /', state.plans.length, 'plans /', state.logs.length, 'logs');
+
+                // 2) 把磁盘数据镜像回 IndexedDB，保持两边一致，
+                //    这样后续 loadAll() 从 IDB 读到的就是完整数据
+                try {
+                    await idbClear('items');
+                    await idbClear('plans');
+                    await idbClear('logs');
+                    for (const it of state.items) await idbPut('items', it);
+                    for (const p of state.plans) await idbPut('plans', p);
+                    for (const l of state.logs) await idbPut('logs', l);
+                    await idbPut('settings', { key: 'bgImage', value: state.bgImage || '' });
+                    await idbPut('settings', { key: 'customTypes', value: state.customTypes });
+                    if (state.categoryOrder) await idbPut('settings', { key: 'categoryOrder', value: state.categoryOrder });
+                    await idbPut('settings', { key: 'categoryMeta', value: state.categoryMeta });
+                    console.log('[myVault] 磁盘数据已镜像回 IndexedDB');
+                } catch (e) {
+                    console.error('镜像回 IndexedDB 失败:', e);
+                }
+
+                if (state.bgImage) applyBgImage(state.bgImage);
+            } else {
+                // 磁盘没有数据：走原来的 IndexedDB 加载流程
+                try { await loadAll(); } catch (e) { console.error('数据加载失败:', e); }
+                try { await ensureDefaultPlans(); } catch (e) { console.error('默认计划初始化失败:', e); }
+                try { await loadBgImage(); } catch (e) { console.error('背景加载失败:', e); }
+                try { await loadCustomTypes(); } catch (e) { console.error('分类加载失败:', e); }
+                try { await loadCategoryOrder(); } catch (e) { console.error('顺序加载失败:', e); }
+                try { await loadCategoryMeta(); } catch (e) { console.error('分类元信息加载失败:', e); }
+            }
+
+            // 3) 启用持久化：此后所有 loadAll() 都会自动写盘
+            state.persistEnabled = true;
+            // 主动写盘一次，确保磁盘文件与当前状态一致
+            try { await saveToDisk(); } catch (e) { console.error('启动写盘失败:', e); }
+
+            renderNav(); renderContent(false);
+        })();
+    </script>
+</body>
+</html>
